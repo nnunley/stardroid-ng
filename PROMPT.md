@@ -1,6 +1,6 @@
-study specs/
+study specs/README.md
 
-Please work on the one most important task for this project in order to create a vulkan demo on an android device.
+Please use multiple subagents to work on the one most important task for this project in order to create a vulkan demo on an android device.
 
 - Use kotlin as the programming language.
 - Use modern built tooling
