@@ -9,9 +9,8 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
-#include <cmath>
-
 #include "shaders.h"
+#include "math_utils.h"
 
 #define LOG_TAG "VulkanWrapper"
 
@@ -1003,18 +1002,7 @@ static void cleanupSwapchain(VulkanContext* ctx) {
     }
 }
 
-// Build a Z-axis rotation matrix (column-major for Vulkan/GLSL)
-static void buildRotationMatrixZ(float angleDegrees, float* matrix) {
-    float angleRadians = angleDegrees * 3.14159265358979f / 180.0f;
-    float cosA = std::cos(angleRadians);
-    float sinA = std::sin(angleRadians);
-
-    // Column-major order for GLSL compatibility
-    matrix[0] = cosA;   matrix[4] = -sinA;  matrix[8]  = 0.0f;  matrix[12] = 0.0f;
-    matrix[1] = sinA;   matrix[5] = cosA;   matrix[9]  = 0.0f;  matrix[13] = 0.0f;
-    matrix[2] = 0.0f;   matrix[6] = 0.0f;   matrix[10] = 1.0f;  matrix[14] = 0.0f;
-    matrix[3] = 0.0f;   matrix[7] = 0.0f;   matrix[11] = 0.0f;  matrix[15] = 1.0f;
-}
+// Use math::rotateZ from math_utils.h instead of local implementation
 
 // Recreate swapchain (for resize)
 static bool recreateSwapchain(VulkanContext* ctx) {
@@ -1083,7 +1071,7 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
 
     // Build rotation matrix from angle and push to shader
     float transform[16];
-    buildRotationMatrixZ(angle, transform);
+    math::rotateZ(angle, transform);
     vkCmdPushConstants(commandBuffer, ctx->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(transform), transform);
 
     // Draw triangle (3 vertices, 1 instance)
