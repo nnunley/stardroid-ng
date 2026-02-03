@@ -36,6 +36,14 @@ object Matrix {
         )
     }
 
+    /** Create translation matrix */
+    fun translate(x: Float, y: Float, z: Float): FloatArray = floatArrayOf(
+        1f, 0f, 0f, 0f,
+        0f, 1f, 0f, 0f,
+        0f, 0f, 1f, 0f,
+        x, y, z, 1f
+    )
+
     /** Create rotation matrix around Z axis */
     fun rotateZ(angleDegrees: Float): FloatArray {
         val angleRadians = angleDegrees * (Math.PI.toFloat() / 180f)

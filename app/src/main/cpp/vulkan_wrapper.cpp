@@ -9,8 +9,10 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <memory>
 #include "shaders.h"
 #include "math_utils.h"
+#include "vulkan_raii.h"
 
 #define LOG_TAG "VulkanWrapper"
 
@@ -53,53 +55,97 @@ static const char* vkResultToString(VkResult result) {
 constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 
 // Vulkan context holds all Vulkan objects
+// IMPORTANT: Member declaration order determines reverse destruction order.
+// Members declared FIRST are destroyed LAST. This order matches the required
+// Vulkan destruction sequence where child objects must be destroyed before parents.
 struct VulkanContext {
-    VkInstance instance = VK_NULL_HANDLE;
-    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    // === Destroyed LAST (declared first) ===
+    // Platform resources
+    UniqueNativeWindow nativeWindow;
+
+    // Instance-level (destroyed after device-level)
+    UniqueInstance instance;
+#ifndef NDEBUG
+    UniqueDebugMessenger debugMessenger;
+#endif
+    UniqueSurface surface;
+
+    // Device (destroyed after all device-dependent resources)
+    UniqueDevice device;
+
+    // Non-owning handles (no destruction needed)
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-    VkDevice device = VK_NULL_HANDLE;
     VkQueue graphicsQueue = VK_NULL_HANDLE;
     VkQueue presentQueue = VK_NULL_HANDLE;
     uint32_t graphicsQueueFamily = UINT32_MAX;
     uint32_t presentQueueFamily = UINT32_MAX;
-    ANativeWindow* nativeWindow = nullptr;
+
+    // === Device-dependent resources (destroyed BEFORE device) ===
+    // Swapchain and image views
+    UniqueSwapchain swapchain;
+    VkFormat swapchainFormat = VK_FORMAT_UNDEFINED;
+    VkExtent2D swapchainExtent = {0, 0};
+    std::vector<VkImage> swapchainImages;  // Owned by swapchain, no explicit destroy
+    std::vector<UniqueImageView> swapchainImageViews;
+
+    // Render pass
+    UniqueRenderPass renderPass;
+
+    // Framebuffers (depend on render pass and image views)
+    std::vector<UniqueFramebuffer> framebuffers;
+
+    // Descriptor resources
+    UniqueDescriptorSetLayout descriptorSetLayout;
+    UniqueDescriptorPool descriptorPool;
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;  // Freed with pool
+
+    // Buffers (uniform, vertex, dynamic)
+    UniqueBuffer uniformBuffer;
+    UniqueDeviceMemory uniformBufferMemory;
+    void* uniformBufferMapped = nullptr;
+
+    UniqueBuffer vertexBuffer;
+    UniqueDeviceMemory vertexBufferMemory;
+
+    UniqueBuffer dynamicVertexBuffer;
+    UniqueDeviceMemory dynamicVertexBufferMemory;
+    void* dynamicVertexBufferMapped = nullptr;
+    size_t dynamicVertexBufferSize = 0;
+    size_t dynamicVertexBufferOffset = 0;
+
+    // Pipeline
+    UniquePipelineLayout pipelineLayout;
+    UniquePipeline trianglePipeline;
+    UniquePipeline linePipeline;
+    UniquePipeline pointPipeline;
+
+    // Command resources
+    UniqueCommandPool commandPool;
+    std::vector<VkCommandBuffer> commandBuffers;  // Freed with pool
+
+    // Synchronization (destroyed FIRST among device resources)
+    std::vector<UniqueSemaphore> imageAvailableSemaphores;
+    std::vector<UniqueSemaphore> renderFinishedSemaphores;
+    std::vector<UniqueFence> inFlightFences;
+    uint32_t currentFrame = 0;
+
+    // === Non-Vulkan state ===
     int width = 0;
     int height = 0;
     bool initialized = false;
     int frameCount = 0;
 
-    // Swapchain
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    VkFormat swapchainFormat = VK_FORMAT_UNDEFINED;
-    VkExtent2D swapchainExtent = {0, 0};
-    std::vector<VkImage> swapchainImages;
-    std::vector<VkImageView> swapchainImageViews;
+    // Cached matrices (column-major, 16 floats each)
+    float viewMatrix[16];
+    float projectionMatrix[16];
 
-    // Render pass and framebuffers
-    VkRenderPass renderPass = VK_NULL_HANDLE;
-    std::vector<VkFramebuffer> framebuffers;
+    // Frame state
+    bool inFrame = false;
+    uint32_t currentImageIndex = 0;
 
-    // Command pool and buffers
-    VkCommandPool commandPool = VK_NULL_HANDLE;
-    std::vector<VkCommandBuffer> commandBuffers;
-
-    // Synchronization
-    std::vector<VkSemaphore> imageAvailableSemaphores;
-    std::vector<VkSemaphore> renderFinishedSemaphores;
-    std::vector<VkFence> inFlightFences;
-    uint32_t currentFrame = 0;
-
-    // Graphics pipeline
-    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-
-    // Vertex buffer
-    VkBuffer vertexBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory vertexBufferMemory = VK_NULL_HANDLE;
-
-#ifndef NDEBUG
-    VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
-#endif
+    // Helper to get raw device handle for Vulkan API calls
+    VkDevice getDevice() const { return device.get(); }
+    VkInstance getInstance() const { return instance.get(); }
 };
 
 #ifndef NDEBUG
@@ -143,6 +189,11 @@ static void destroyDebugUtilsMessenger(
     if (func != nullptr) {
         func(instance, debugMessenger, pAllocator);
     }
+}
+
+// RAII wrapper callback (declared in vulkan_raii.h)
+void destroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT messenger) {
+    destroyDebugUtilsMessenger(instance, messenger, nullptr);
 }
 #endif
 
@@ -223,11 +274,13 @@ static bool createInstance(VulkanContext* ctx) {
     }
 #endif
 
-    VkResult result = vkCreateInstance(&createInfo, nullptr, &ctx->instance);
+    VkInstance instance;
+    VkResult result = vkCreateInstance(&createInfo, nullptr, &instance);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create Vulkan instance: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->instance = UniqueInstance(instance);
 
     LOGI("Vulkan instance created successfully");
 
@@ -245,8 +298,11 @@ static bool createInstance(VulkanContext* ctx) {
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
         messengerInfo.pfnUserCallback = debugCallback;
 
-        if (createDebugUtilsMessenger(ctx->instance, &messengerInfo, nullptr, &ctx->debugMessenger) != VK_SUCCESS) {
+        VkDebugUtilsMessengerEXT debugMessenger;
+        if (createDebugUtilsMessenger(ctx->instance.get(), &messengerInfo, nullptr, &debugMessenger) != VK_SUCCESS) {
             LOGW("Failed to create debug messenger");
+        } else {
+            ctx->debugMessenger = UniqueDebugMessenger(debugMessenger, DebugMessengerDeleter{ctx->instance.get()});
         }
     }
 #endif
@@ -258,13 +314,15 @@ static bool createInstance(VulkanContext* ctx) {
 static bool createSurface(VulkanContext* ctx) {
     VkAndroidSurfaceCreateInfoKHR createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-    createInfo.window = ctx->nativeWindow;
+    createInfo.window = ctx->nativeWindow.get();
 
-    VkResult result = vkCreateAndroidSurfaceKHR(ctx->instance, &createInfo, nullptr, &ctx->surface);
+    VkSurfaceKHR surface;
+    VkResult result = vkCreateAndroidSurfaceKHR(ctx->instance.get(), &createInfo, nullptr, &surface);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create Android surface: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->surface = UniqueSurface(surface, SurfaceDeleter{ctx->instance.get()});
 
     LOGI("Android Vulkan surface created successfully");
     return true;
@@ -289,7 +347,7 @@ static bool findQueueFamilies(VulkanContext* ctx, VkPhysicalDevice device) {
 
         // Check for present support
         VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, ctx->surface, &presentSupport);
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, ctx->surface.get(), &presentSupport);
         if (presentSupport) {
             ctx->presentQueueFamily = i;
         }
@@ -324,7 +382,7 @@ static bool checkDeviceExtensions(VkPhysicalDevice device) {
 // Select physical device
 static bool pickPhysicalDevice(VulkanContext* ctx) {
     uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(ctx->instance, &deviceCount, nullptr);
+    vkEnumeratePhysicalDevices(ctx->instance.get(), &deviceCount, nullptr);
 
     if (deviceCount == 0) {
         LOGE("No Vulkan-capable GPU found");
@@ -332,7 +390,7 @@ static bool pickPhysicalDevice(VulkanContext* ctx) {
     }
 
     std::vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(ctx->instance, &deviceCount, devices.data());
+    vkEnumeratePhysicalDevices(ctx->instance.get(), &deviceCount, devices.data());
 
     for (const auto& device : devices) {
         VkPhysicalDeviceProperties deviceProperties;
@@ -393,14 +451,16 @@ static bool createLogicalDevice(VulkanContext* ctx) {
     createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
     createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-    VkResult result = vkCreateDevice(ctx->physicalDevice, &createInfo, nullptr, &ctx->device);
+    VkDevice device;
+    VkResult result = vkCreateDevice(ctx->physicalDevice, &createInfo, nullptr, &device);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create logical device: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->device = UniqueDevice(device);
 
-    vkGetDeviceQueue(ctx->device, ctx->graphicsQueueFamily, 0, &ctx->graphicsQueue);
-    vkGetDeviceQueue(ctx->device, ctx->presentQueueFamily, 0, &ctx->presentQueue);
+    vkGetDeviceQueue(ctx->device.get(), ctx->graphicsQueueFamily, 0, &ctx->graphicsQueue);
+    vkGetDeviceQueue(ctx->device.get(), ctx->presentQueueFamily, 0, &ctx->presentQueue);
 
     LOGI("Logical device created successfully");
     return true;
@@ -476,7 +536,7 @@ static VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities,
 
 // Create swapchain
 static bool createSwapchain(VulkanContext* ctx) {
-    SwapchainSupportDetails support = querySwapchainSupport(ctx->physicalDevice, ctx->surface);
+    SwapchainSupportDetails support = querySwapchainSupport(ctx->physicalDevice, ctx->surface.get());
 
     if (support.formats.empty() || support.presentModes.empty()) {
         LOGE("Swapchain support inadequate");
@@ -495,7 +555,7 @@ static bool createSwapchain(VulkanContext* ctx) {
 
     VkSwapchainCreateInfoKHR createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-    createInfo.surface = ctx->surface;
+    createInfo.surface = ctx->surface.get();
     createInfo.minImageCount = imageCount;
     createInfo.imageFormat = surfaceFormat.format;
     createInfo.imageColorSpace = surfaceFormat.colorSpace;
@@ -530,19 +590,21 @@ static bool createSwapchain(VulkanContext* ctx) {
     createInfo.clipped = VK_TRUE;
     createInfo.oldSwapchain = VK_NULL_HANDLE;
 
-    VkResult result = vkCreateSwapchainKHR(ctx->device, &createInfo, nullptr, &ctx->swapchain);
+    VkSwapchainKHR swapchain;
+    VkResult result = vkCreateSwapchainKHR(ctx->device.get(), &createInfo, nullptr, &swapchain);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create swapchain: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->swapchain = UniqueSwapchain(swapchain, SwapchainDeleter{ctx->device.get()});
 
     ctx->swapchainFormat = surfaceFormat.format;
     ctx->swapchainExtent = extent;
 
     // Get swapchain images
-    vkGetSwapchainImagesKHR(ctx->device, ctx->swapchain, &imageCount, nullptr);
+    vkGetSwapchainImagesKHR(ctx->device.get(), ctx->swapchain.get(), &imageCount, nullptr);
     ctx->swapchainImages.resize(imageCount);
-    vkGetSwapchainImagesKHR(ctx->device, ctx->swapchain, &imageCount, ctx->swapchainImages.data());
+    vkGetSwapchainImagesKHR(ctx->device.get(), ctx->swapchain.get(), &imageCount, ctx->swapchainImages.data());
 
     LOGI("Swapchain created: %dx%d, %d images, format=%d",
          extent.width, extent.height, imageCount, surfaceFormat.format);
@@ -552,7 +614,8 @@ static bool createSwapchain(VulkanContext* ctx) {
 
 // Create image views for swapchain images
 static bool createImageViews(VulkanContext* ctx) {
-    ctx->swapchainImageViews.resize(ctx->swapchainImages.size());
+    ctx->swapchainImageViews.clear();
+    ctx->swapchainImageViews.reserve(ctx->swapchainImages.size());
 
     for (size_t i = 0; i < ctx->swapchainImages.size(); i++) {
         VkImageViewCreateInfo createInfo{};
@@ -570,11 +633,13 @@ static bool createImageViews(VulkanContext* ctx) {
         createInfo.subresourceRange.baseArrayLayer = 0;
         createInfo.subresourceRange.layerCount = 1;
 
-        VkResult result = vkCreateImageView(ctx->device, &createInfo, nullptr, &ctx->swapchainImageViews[i]);
+        VkImageView imageView;
+        VkResult result = vkCreateImageView(ctx->device.get(), &createInfo, nullptr, &imageView);
         if (result != VK_SUCCESS) {
             LOGE("Failed to create image view %zu: %s (%d)", i, vkResultToString(result), result);
             return false;
         }
+        ctx->swapchainImageViews.push_back(UniqueImageView(imageView, ImageViewDeleter{ctx->device.get()}));
     }
 
     LOGI("Created %zu image views", ctx->swapchainImageViews.size());
@@ -619,11 +684,13 @@ static bool createRenderPass(VulkanContext* ctx) {
     createInfo.dependencyCount = 1;
     createInfo.pDependencies = &dependency;
 
-    VkResult result = vkCreateRenderPass(ctx->device, &createInfo, nullptr, &ctx->renderPass);
+    VkRenderPass renderPass;
+    VkResult result = vkCreateRenderPass(ctx->device.get(), &createInfo, nullptr, &renderPass);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create render pass: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->renderPass = UniqueRenderPass(renderPass, RenderPassDeleter{ctx->device.get()});
 
     LOGI("Render pass created");
     return true;
@@ -631,25 +698,28 @@ static bool createRenderPass(VulkanContext* ctx) {
 
 // Create framebuffers
 static bool createFramebuffers(VulkanContext* ctx) {
-    ctx->framebuffers.resize(ctx->swapchainImageViews.size());
+    ctx->framebuffers.clear();
+    ctx->framebuffers.reserve(ctx->swapchainImageViews.size());
 
     for (size_t i = 0; i < ctx->swapchainImageViews.size(); i++) {
-        VkImageView attachments[] = {ctx->swapchainImageViews[i]};
+        VkImageView attachments[] = {ctx->swapchainImageViews[i].get()};
 
         VkFramebufferCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        createInfo.renderPass = ctx->renderPass;
+        createInfo.renderPass = ctx->renderPass.get();
         createInfo.attachmentCount = 1;
         createInfo.pAttachments = attachments;
         createInfo.width = ctx->swapchainExtent.width;
         createInfo.height = ctx->swapchainExtent.height;
         createInfo.layers = 1;
 
-        VkResult result = vkCreateFramebuffer(ctx->device, &createInfo, nullptr, &ctx->framebuffers[i]);
+        VkFramebuffer framebuffer;
+        VkResult result = vkCreateFramebuffer(ctx->device.get(), &createInfo, nullptr, &framebuffer);
         if (result != VK_SUCCESS) {
             LOGE("Failed to create framebuffer %zu: %s (%d)", i, vkResultToString(result), result);
             return false;
         }
+        ctx->framebuffers.push_back(UniqueFramebuffer(framebuffer, FramebufferDeleter{ctx->device.get()}));
     }
 
     LOGI("Created %zu framebuffers", ctx->framebuffers.size());
@@ -663,11 +733,13 @@ static bool createCommandPool(VulkanContext* ctx) {
     createInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     createInfo.queueFamilyIndex = ctx->graphicsQueueFamily;
 
-    VkResult result = vkCreateCommandPool(ctx->device, &createInfo, nullptr, &ctx->commandPool);
+    VkCommandPool commandPool;
+    VkResult result = vkCreateCommandPool(ctx->device.get(), &createInfo, nullptr, &commandPool);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create command pool: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->commandPool = UniqueCommandPool(commandPool, CommandPoolDeleter{ctx->device.get()});
 
     LOGI("Command pool created");
     return true;
@@ -679,11 +751,11 @@ static bool createCommandBuffers(VulkanContext* ctx) {
 
     VkCommandBufferAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.commandPool = ctx->commandPool;
+    allocInfo.commandPool = ctx->commandPool.get();
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = static_cast<uint32_t>(ctx->commandBuffers.size());
 
-    VkResult result = vkAllocateCommandBuffers(ctx->device, &allocInfo, ctx->commandBuffers.data());
+    VkResult result = vkAllocateCommandBuffers(ctx->device.get(), &allocInfo, ctx->commandBuffers.data());
     if (result != VK_SUCCESS) {
         LOGE("Failed to allocate command buffers: %s (%d)", vkResultToString(result), result);
         return false;
@@ -695,9 +767,12 @@ static bool createCommandBuffers(VulkanContext* ctx) {
 
 // Create synchronization objects
 static bool createSyncObjects(VulkanContext* ctx) {
-    ctx->imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    ctx->renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
-    ctx->inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+    ctx->imageAvailableSemaphores.clear();
+    ctx->renderFinishedSemaphores.clear();
+    ctx->inFlightFences.clear();
+    ctx->imageAvailableSemaphores.reserve(MAX_FRAMES_IN_FLIGHT);
+    ctx->renderFinishedSemaphores.reserve(MAX_FRAMES_IN_FLIGHT);
+    ctx->inFlightFences.reserve(MAX_FRAMES_IN_FLIGHT);
 
     VkSemaphoreCreateInfo semaphoreInfo{};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -707,15 +782,226 @@ static bool createSyncObjects(VulkanContext* ctx) {
     fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        if (vkCreateSemaphore(ctx->device, &semaphoreInfo, nullptr, &ctx->imageAvailableSemaphores[i]) != VK_SUCCESS ||
-            vkCreateSemaphore(ctx->device, &semaphoreInfo, nullptr, &ctx->renderFinishedSemaphores[i]) != VK_SUCCESS ||
-            vkCreateFence(ctx->device, &fenceInfo, nullptr, &ctx->inFlightFences[i]) != VK_SUCCESS) {
+        VkSemaphore imageAvailableSemaphore, renderFinishedSemaphore;
+        VkFence inFlightFence;
+        if (vkCreateSemaphore(ctx->device.get(), &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
+            vkCreateSemaphore(ctx->device.get(), &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS ||
+            vkCreateFence(ctx->device.get(), &fenceInfo, nullptr, &inFlightFence) != VK_SUCCESS) {
             LOGE("Failed to create synchronization objects for frame %zu", i);
             return false;
         }
+        ctx->imageAvailableSemaphores.push_back(UniqueSemaphore(imageAvailableSemaphore, SemaphoreDeleter{ctx->device.get()}));
+        ctx->renderFinishedSemaphores.push_back(UniqueSemaphore(renderFinishedSemaphore, SemaphoreDeleter{ctx->device.get()}));
+        ctx->inFlightFences.push_back(UniqueFence(inFlightFence, FenceDeleter{ctx->device.get()}));
     }
 
     LOGI("Created synchronization objects");
+    return true;
+}
+
+// Forward declaration (defined later in file)
+static uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemoryPropertyFlags properties);
+
+// Create descriptor set layout for uniform buffer
+static bool createDescriptorSetLayout(VulkanContext* ctx) {
+    VkDescriptorSetLayoutBinding uboLayoutBinding{};
+    uboLayoutBinding.binding = 0;
+    uboLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uboLayoutBinding.descriptorCount = 1;
+    uboLayoutBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    uboLayoutBinding.pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = 1;
+    layoutInfo.pBindings = &uboLayoutBinding;
+
+    VkDescriptorSetLayout descriptorSetLayout;
+    VkResult result = vkCreateDescriptorSetLayout(ctx->device.get(), &layoutInfo, nullptr, &descriptorSetLayout);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create descriptor set layout: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+    ctx->descriptorSetLayout = UniqueDescriptorSetLayout(descriptorSetLayout, DescriptorSetLayoutDeleter{ctx->device.get()});
+
+    LOGI("Descriptor set layout created");
+    return true;
+}
+
+// Create uniform buffer for view/projection matrices
+static bool createUniformBuffer(VulkanContext* ctx) {
+    VkDeviceSize bufferSize = sizeof(float) * 32; // 2 mat4 = 128 bytes
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer uniformBuffer;
+    VkResult result = vkCreateBuffer(ctx->device.get(), &bufferInfo, nullptr, &uniformBuffer);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create uniform buffer: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+    ctx->uniformBuffer = UniqueBuffer(uniformBuffer, BufferDeleter{ctx->device.get()});
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(ctx->device.get(), ctx->uniformBuffer.get(), &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(ctx, memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (allocInfo.memoryTypeIndex == UINT32_MAX) {
+        LOGE("Failed to find suitable memory type for uniform buffer");
+        return false;
+    }
+
+    VkDeviceMemory uniformBufferMemory;
+    result = vkAllocateMemory(ctx->device.get(), &allocInfo, nullptr, &uniformBufferMemory);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to allocate uniform buffer memory: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+    ctx->uniformBufferMemory = UniqueDeviceMemory(uniformBufferMemory, DeviceMemoryDeleter{ctx->device.get()});
+
+    result = vkBindBufferMemory(ctx->device.get(), ctx->uniformBuffer.get(), ctx->uniformBufferMemory.get(), 0);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to bind uniform buffer memory: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+
+    // Persistently map the buffer
+    result = vkMapMemory(ctx->device.get(), ctx->uniformBufferMemory.get(), 0, bufferSize, 0, &ctx->uniformBufferMapped);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to map uniform buffer memory: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+
+    // Initialize with identity matrices
+    math::identity(ctx->viewMatrix);
+    math::identity(ctx->projectionMatrix);
+    memcpy(ctx->uniformBufferMapped, ctx->viewMatrix, sizeof(float) * 16);
+    memcpy(static_cast<char*>(ctx->uniformBufferMapped) + sizeof(float) * 16, ctx->projectionMatrix, sizeof(float) * 16);
+
+    LOGI("Uniform buffer created (%zu bytes, persistently mapped)", (size_t)bufferSize);
+    return true;
+}
+
+// Create descriptor pool and allocate descriptor set
+static bool createDescriptorPool(VulkanContext* ctx) {
+    VkDescriptorPoolSize poolSize{};
+    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    poolSize.descriptorCount = 1;
+
+    VkDescriptorPoolCreateInfo poolInfo{};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+
+    VkDescriptorPool descriptorPool;
+    VkResult result = vkCreateDescriptorPool(ctx->device.get(), &poolInfo, nullptr, &descriptorPool);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create descriptor pool: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+    ctx->descriptorPool = UniqueDescriptorPool(descriptorPool, DescriptorPoolDeleter{ctx->device.get()});
+
+    // Allocate descriptor set
+    VkDescriptorSetLayout descriptorSetLayout = ctx->descriptorSetLayout.get();
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = ctx->descriptorPool.get();
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &descriptorSetLayout;
+
+    result = vkAllocateDescriptorSets(ctx->device.get(), &allocInfo, &ctx->descriptorSet);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to allocate descriptor set: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+
+    // Update descriptor set to point to uniform buffer
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = ctx->uniformBuffer.get();
+    bufferInfo.offset = 0;
+    bufferInfo.range = sizeof(float) * 32; // 2 mat4
+
+    VkWriteDescriptorSet descriptorWrite{};
+    descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrite.dstSet = ctx->descriptorSet;
+    descriptorWrite.dstBinding = 0;
+    descriptorWrite.dstArrayElement = 0;
+    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptorWrite.descriptorCount = 1;
+    descriptorWrite.pBufferInfo = &bufferInfo;
+
+    vkUpdateDescriptorSets(ctx->device.get(), 1, &descriptorWrite, 0, nullptr);
+
+    LOGI("Descriptor pool and set created");
+    return true;
+}
+
+// Create dynamic vertex buffer (64KB initial size)
+static bool createDynamicVertexBuffer(VulkanContext* ctx) {
+    ctx->dynamicVertexBufferSize = 65536; // 64KB
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = ctx->dynamicVertexBufferSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer dynamicVertexBuffer;
+    VkResult result = vkCreateBuffer(ctx->device.get(), &bufferInfo, nullptr, &dynamicVertexBuffer);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create dynamic vertex buffer: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+    ctx->dynamicVertexBuffer = UniqueBuffer(dynamicVertexBuffer, BufferDeleter{ctx->device.get()});
+
+    VkMemoryRequirements memRequirements;
+    vkGetBufferMemoryRequirements(ctx->device.get(), ctx->dynamicVertexBuffer.get(), &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(ctx, memRequirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    if (allocInfo.memoryTypeIndex == UINT32_MAX) {
+        LOGE("Failed to find suitable memory type for dynamic vertex buffer");
+        return false;
+    }
+
+    VkDeviceMemory dynamicVertexBufferMemory;
+    result = vkAllocateMemory(ctx->device.get(), &allocInfo, nullptr, &dynamicVertexBufferMemory);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to allocate dynamic vertex buffer memory: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+    ctx->dynamicVertexBufferMemory = UniqueDeviceMemory(dynamicVertexBufferMemory, DeviceMemoryDeleter{ctx->device.get()});
+
+    result = vkBindBufferMemory(ctx->device.get(), ctx->dynamicVertexBuffer.get(), ctx->dynamicVertexBufferMemory.get(), 0);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to bind dynamic vertex buffer memory: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+
+    // Persistently map
+    result = vkMapMemory(ctx->device.get(), ctx->dynamicVertexBufferMemory.get(), 0, ctx->dynamicVertexBufferSize, 0, &ctx->dynamicVertexBufferMapped);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to map dynamic vertex buffer memory: %s (%d)", vkResultToString(result), result);
+        return false;
+    }
+
+    ctx->dynamicVertexBufferOffset = 0;
+
+    LOGI("Dynamic vertex buffer created (%zu bytes, persistently mapped)", ctx->dynamicVertexBufferSize);
     return true;
 }
 
@@ -727,7 +1013,7 @@ static VkShaderModule createShaderModule(VulkanContext* ctx, const unsigned char
     createInfo.pCode = reinterpret_cast<const uint32_t*>(code);
 
     VkShaderModule shaderModule;
-    VkResult result = vkCreateShaderModule(ctx->device, &createInfo, nullptr, &shaderModule);
+    VkResult result = vkCreateShaderModule(ctx->device.get(), &createInfo, nullptr, &shaderModule);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create shader module: %s (%d)", vkResultToString(result), result);
         return VK_NULL_HANDLE;
@@ -736,25 +1022,10 @@ static VkShaderModule createShaderModule(VulkanContext* ctx, const unsigned char
     return shaderModule;
 }
 
-// Create graphics pipeline
-static bool createGraphicsPipeline(VulkanContext* ctx) {
-    // Create shader modules
-    VkShaderModule vertShaderModule = createShaderModule(ctx, triangle_vert_spv, triangle_vert_spv_len);
-    VkShaderModule fragShaderModule = createShaderModule(ctx, triangle_frag_spv, triangle_frag_spv_len);
-
-    if (vertShaderModule == VK_NULL_HANDLE || fragShaderModule == VK_NULL_HANDLE) {
-        LOGE("Failed to create shader modules");
-        if (vertShaderModule != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(ctx->device, vertShaderModule, nullptr);
-        }
-        if (fragShaderModule != VK_NULL_HANDLE) {
-            vkDestroyShaderModule(ctx->device, fragShaderModule, nullptr);
-        }
-        return false;
-    }
-
-    LOGI("Shader modules created");
-
+// Create a single graphics pipeline for a specific topology
+// Assumes pipeline layout already exists
+static UniquePipeline createPipelineForTopology(VulkanContext* ctx, VkPrimitiveTopology topology,
+                                                 VkShaderModule vertShaderModule, VkShaderModule fragShaderModule) {
     // Shader stages
     VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
     vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -770,23 +1041,23 @@ static bool createGraphicsPipeline(VulkanContext* ctx) {
 
     VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
-    // Vertex input: position (vec2) and color (vec3)
+    // Vertex input: position (vec3) and color (vec4) = 7 floats per vertex
     VkVertexInputBindingDescription bindingDescription{};
     bindingDescription.binding = 0;
-    bindingDescription.stride = sizeof(float) * 5; // vec2 position + vec3 color
+    bindingDescription.stride = sizeof(float) * 7; // vec3 position + vec4 color
     bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
     VkVertexInputAttributeDescription attributeDescriptions[2] = {};
-    // Position
+    // Position (vec3)
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
-    attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
     attributeDescriptions[0].offset = 0;
-    // Color
+    // Color (vec4)
     attributeDescriptions[1].binding = 0;
     attributeDescriptions[1].location = 1;
-    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[1].offset = sizeof(float) * 2;
+    attributeDescriptions[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributeDescriptions[1].offset = sizeof(float) * 3;
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
     vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -795,10 +1066,10 @@ static bool createGraphicsPipeline(VulkanContext* ctx) {
     vertexInputInfo.vertexAttributeDescriptionCount = 2;
     vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
 
-    // Input assembly
+    // Input assembly - use the topology parameter
     VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
     inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    inputAssembly.topology = topology;
     inputAssembly.primitiveRestartEnable = VK_FALSE;
 
     // Dynamic states for viewport and scissor
@@ -814,14 +1085,19 @@ static bool createGraphicsPipeline(VulkanContext* ctx) {
     viewportState.viewportCount = 1;
     viewportState.scissorCount = 1;
 
-    // Rasterizer
+    // Rasterizer - disable culling for points and lines
     VkPipelineRasterizationStateCreateInfo rasterizer{};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    // Disable culling for points and lines (they have no front/back face)
+    if (topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST) {
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+    } else {
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    }
     rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer.depthBiasEnable = VK_FALSE;
 
@@ -843,28 +1119,6 @@ static bool createGraphicsPipeline(VulkanContext* ctx) {
     colorBlending.attachmentCount = 1;
     colorBlending.pAttachments = &colorBlendAttachment;
 
-    // Push constants for transform matrix (mat4 = 64 bytes)
-    VkPushConstantRange pushConstantRange{};
-    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-    pushConstantRange.offset = 0;
-    pushConstantRange.size = sizeof(float) * 16; // mat4
-
-    // Pipeline layout
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipelineLayoutInfo.pushConstantRangeCount = 1;
-    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
-
-    VkResult result = vkCreatePipelineLayout(ctx->device, &pipelineLayoutInfo, nullptr, &ctx->pipelineLayout);
-    if (result != VK_SUCCESS) {
-        LOGE("Failed to create pipeline layout: %s (%d)", vkResultToString(result), result);
-        vkDestroyShaderModule(ctx->device, vertShaderModule, nullptr);
-        vkDestroyShaderModule(ctx->device, fragShaderModule, nullptr);
-        return false;
-    }
-
-    LOGI("Pipeline layout created");
-
     // Create graphics pipeline
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -877,22 +1131,81 @@ static bool createGraphicsPipeline(VulkanContext* ctx) {
     pipelineInfo.pMultisampleState = &multisampling;
     pipelineInfo.pColorBlendState = &colorBlending;
     pipelineInfo.pDynamicState = &dynamicState;
-    pipelineInfo.layout = ctx->pipelineLayout;
-    pipelineInfo.renderPass = ctx->renderPass;
+    pipelineInfo.layout = ctx->pipelineLayout.get();
+    pipelineInfo.renderPass = ctx->renderPass.get();
     pipelineInfo.subpass = 0;
 
-    result = vkCreateGraphicsPipelines(ctx->device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &ctx->graphicsPipeline);
-
-    // Clean up shader modules (no longer needed after pipeline creation)
-    vkDestroyShaderModule(ctx->device, vertShaderModule, nullptr);
-    vkDestroyShaderModule(ctx->device, fragShaderModule, nullptr);
+    VkPipeline pipeline;
+    VkResult result = vkCreateGraphicsPipelines(ctx->device.get(), VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline);
 
     if (result != VK_SUCCESS) {
-        LOGE("Failed to create graphics pipeline: %s (%d)", vkResultToString(result), result);
+        LOGE("Failed to create graphics pipeline for topology %d: %s (%d)", topology, vkResultToString(result), result);
+        return UniquePipeline{};
+    }
+
+    return UniquePipeline(pipeline, PipelineDeleter{ctx->device.get()});
+}
+
+// Create all graphics pipelines (triangles, lines, points)
+static bool createGraphicsPipelines(VulkanContext* ctx) {
+    // Create shader modules (shared by all pipelines)
+    VkShaderModule vertShaderModule = createShaderModule(ctx, triangle_vert_spv, triangle_vert_spv_len);
+    VkShaderModule fragShaderModule = createShaderModule(ctx, triangle_frag_spv, triangle_frag_spv_len);
+
+    if (vertShaderModule == VK_NULL_HANDLE || fragShaderModule == VK_NULL_HANDLE) {
+        LOGE("Failed to create shader modules");
+        if (vertShaderModule != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(ctx->device.get(), vertShaderModule, nullptr);
+        }
+        if (fragShaderModule != VK_NULL_HANDLE) {
+            vkDestroyShaderModule(ctx->device.get(), fragShaderModule, nullptr);
+        }
         return false;
     }
 
-    LOGI("Graphics pipeline created");
+    LOGI("Shader modules created");
+
+    // Create pipeline layout (shared by all pipelines)
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(float) * 16; // mat4
+
+    VkDescriptorSetLayout descriptorSetLayout = ctx->descriptorSetLayout.get();
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+    pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipelineLayoutInfo.setLayoutCount = 1;
+    pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+    pipelineLayoutInfo.pushConstantRangeCount = 1;
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+    VkPipelineLayout pipelineLayout;
+    VkResult result = vkCreatePipelineLayout(ctx->device.get(), &pipelineLayoutInfo, nullptr, &pipelineLayout);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to create pipeline layout: %s (%d)", vkResultToString(result), result);
+        vkDestroyShaderModule(ctx->device.get(), vertShaderModule, nullptr);
+        vkDestroyShaderModule(ctx->device.get(), fragShaderModule, nullptr);
+        return false;
+    }
+    ctx->pipelineLayout = UniquePipelineLayout(pipelineLayout, PipelineLayoutDeleter{ctx->device.get()});
+
+    LOGI("Pipeline layout created");
+
+    // Create pipelines for each topology
+    ctx->trianglePipeline = createPipelineForTopology(ctx, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, vertShaderModule, fragShaderModule);
+    ctx->linePipeline = createPipelineForTopology(ctx, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, vertShaderModule, fragShaderModule);
+    ctx->pointPipeline = createPipelineForTopology(ctx, VK_PRIMITIVE_TOPOLOGY_POINT_LIST, vertShaderModule, fragShaderModule);
+
+    // Clean up shader modules (no longer needed after pipeline creation)
+    vkDestroyShaderModule(ctx->device.get(), vertShaderModule, nullptr);
+    vkDestroyShaderModule(ctx->device.get(), fragShaderModule, nullptr);
+
+    if (!ctx->trianglePipeline || !ctx->linePipeline || !ctx->pointPipeline) {
+        LOGE("Failed to create one or more graphics pipelines");
+        return false;
+    }
+
+    LOGI("All graphics pipelines created (triangles, lines, points)");
     return true;
 }
 
@@ -912,12 +1225,12 @@ static uint32_t findMemoryType(VulkanContext* ctx, uint32_t typeFilter, VkMemory
     return UINT32_MAX;
 }
 
-// Triangle vertex data: position (vec2) + color (vec3) = 5 floats per vertex
+// Triangle vertex data: position (vec3) + color (vec4) = 7 floats per vertex
 static const float triangleVertices[] = {
-    // Position (x, y)    Color (r, g, b)
-     0.0f, -0.5f,         1.0f, 0.0f, 0.0f,  // Top vertex - red
-    -0.5f,  0.5f,         0.0f, 1.0f, 0.0f,  // Bottom left - green
-     0.5f,  0.5f,         0.0f, 0.0f, 1.0f,  // Bottom right - blue
+    // Position (x, y, z)    Color (r, g, b, a)
+     0.0f, -0.5f, 0.0f,      1.0f, 0.0f, 0.0f, 1.0f,  // Top vertex - red
+    -0.5f,  0.5f, 0.0f,      0.0f, 1.0f, 0.0f, 1.0f,  // Bottom left - green
+     0.5f,  0.5f, 0.0f,      0.0f, 0.0f, 1.0f, 1.0f,  // Bottom right - blue
 };
 
 // Create vertex buffer
@@ -931,15 +1244,17 @@ static bool createVertexBuffer(VulkanContext* ctx) {
     bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkResult result = vkCreateBuffer(ctx->device, &bufferInfo, nullptr, &ctx->vertexBuffer);
+    VkBuffer vertexBuffer;
+    VkResult result = vkCreateBuffer(ctx->device.get(), &bufferInfo, nullptr, &vertexBuffer);
     if (result != VK_SUCCESS) {
         LOGE("Failed to create vertex buffer: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->vertexBuffer = UniqueBuffer(vertexBuffer, BufferDeleter{ctx->device.get()});
 
     // Get memory requirements
     VkMemoryRequirements memRequirements;
-    vkGetBufferMemoryRequirements(ctx->device, ctx->vertexBuffer, &memRequirements);
+    vkGetBufferMemoryRequirements(ctx->device.get(), ctx->vertexBuffer.get(), &memRequirements);
 
     // Allocate memory (host visible so we can map and copy)
     VkMemoryAllocateInfo allocInfo{};
@@ -953,14 +1268,16 @@ static bool createVertexBuffer(VulkanContext* ctx) {
         return false;
     }
 
-    result = vkAllocateMemory(ctx->device, &allocInfo, nullptr, &ctx->vertexBufferMemory);
+    VkDeviceMemory vertexBufferMemory;
+    result = vkAllocateMemory(ctx->device.get(), &allocInfo, nullptr, &vertexBufferMemory);
     if (result != VK_SUCCESS) {
         LOGE("Failed to allocate vertex buffer memory: %s (%d)", vkResultToString(result), result);
         return false;
     }
+    ctx->vertexBufferMemory = UniqueDeviceMemory(vertexBufferMemory, DeviceMemoryDeleter{ctx->device.get()});
 
     // Bind buffer to memory
-    result = vkBindBufferMemory(ctx->device, ctx->vertexBuffer, ctx->vertexBufferMemory, 0);
+    result = vkBindBufferMemory(ctx->device.get(), ctx->vertexBuffer.get(), ctx->vertexBufferMemory.get(), 0);
     if (result != VK_SUCCESS) {
         LOGE("Failed to bind vertex buffer memory: %s (%d)", vkResultToString(result), result);
         return false;
@@ -968,38 +1285,24 @@ static bool createVertexBuffer(VulkanContext* ctx) {
 
     // Map memory and copy vertex data
     void* data;
-    result = vkMapMemory(ctx->device, ctx->vertexBufferMemory, 0, bufferSize, 0, &data);
+    result = vkMapMemory(ctx->device.get(), ctx->vertexBufferMemory.get(), 0, bufferSize, 0, &data);
     if (result != VK_SUCCESS) {
         LOGE("Failed to map vertex buffer memory: %s (%d)", vkResultToString(result), result);
         return false;
     }
     memcpy(data, triangleVertices, bufferSize);
-    vkUnmapMemory(ctx->device, ctx->vertexBufferMemory);
+    vkUnmapMemory(ctx->device.get(), ctx->vertexBufferMemory.get());
 
     LOGI("Vertex buffer created (%zu bytes)", (size_t)bufferSize);
     return true;
 }
 
 // Clean up swapchain-related resources (for resize)
+// With RAII, we simply clear the vectors and reset the unique_ptrs
 static void cleanupSwapchain(VulkanContext* ctx) {
-    for (auto framebuffer : ctx->framebuffers) {
-        if (framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(ctx->device, framebuffer, nullptr);
-        }
-    }
     ctx->framebuffers.clear();
-
-    for (auto imageView : ctx->swapchainImageViews) {
-        if (imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(ctx->device, imageView, nullptr);
-        }
-    }
     ctx->swapchainImageViews.clear();
-
-    if (ctx->swapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(ctx->device, ctx->swapchain, nullptr);
-        ctx->swapchain = VK_NULL_HANDLE;
-    }
+    ctx->swapchain.reset();
 }
 
 // Use math::rotateZ from math_utils.h instead of local implementation
@@ -1008,7 +1311,7 @@ static void cleanupSwapchain(VulkanContext* ctx) {
 static bool recreateSwapchain(VulkanContext* ctx) {
     LOGI("Recreating swapchain...");
 
-    vkDeviceWaitIdle(ctx->device);
+    vkDeviceWaitIdle(ctx->device.get());
 
     cleanupSwapchain(ctx);
 
@@ -1033,8 +1336,8 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
 
     VkRenderPassBeginInfo renderPassInfo{};
     renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderPassInfo.renderPass = ctx->renderPass;
-    renderPassInfo.framebuffer = ctx->framebuffers[imageIndex];
+    renderPassInfo.renderPass = ctx->renderPass.get();
+    renderPassInfo.framebuffer = ctx->framebuffers[imageIndex].get();
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = ctx->swapchainExtent;
 
@@ -1046,7 +1349,11 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
     vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
     // Bind graphics pipeline
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx->graphicsPipeline);
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx->trianglePipeline.get());
+
+    // Bind descriptor set (uniform buffer with view/projection matrices)
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, ctx->pipelineLayout.get(),
+                           0, 1, &ctx->descriptorSet, 0, nullptr);
 
     // Set dynamic viewport
     VkViewport viewport{};
@@ -1065,14 +1372,14 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
     vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
 
     // Bind vertex buffer
-    VkBuffer vertexBuffers[] = {ctx->vertexBuffer};
+    VkBuffer vertexBuffers[] = {ctx->vertexBuffer.get()};
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
     // Build rotation matrix from angle and push to shader
     float transform[16];
     math::rotateZ(angle, transform);
-    vkCmdPushConstants(commandBuffer, ctx->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(transform), transform);
+    vkCmdPushConstants(commandBuffer, ctx->pipelineLayout.get(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(transform), transform);
 
     // Draw triangle (3 vertices, 1 instance)
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
@@ -1087,112 +1394,8 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
     return true;
 }
 
-// Cleanup Vulkan resources
-static void cleanup(VulkanContext* ctx) {
-    if (ctx->device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(ctx->device);
-
-        // Destroy sync objects
-        for (size_t i = 0; i < ctx->imageAvailableSemaphores.size(); i++) {
-            if (ctx->imageAvailableSemaphores[i] != VK_NULL_HANDLE) {
-                vkDestroySemaphore(ctx->device, ctx->imageAvailableSemaphores[i], nullptr);
-            }
-            if (ctx->renderFinishedSemaphores[i] != VK_NULL_HANDLE) {
-                vkDestroySemaphore(ctx->device, ctx->renderFinishedSemaphores[i], nullptr);
-            }
-            if (ctx->inFlightFences[i] != VK_NULL_HANDLE) {
-                vkDestroyFence(ctx->device, ctx->inFlightFences[i], nullptr);
-            }
-        }
-        ctx->imageAvailableSemaphores.clear();
-        ctx->renderFinishedSemaphores.clear();
-        ctx->inFlightFences.clear();
-
-        // Destroy command pool (frees command buffers automatically)
-        if (ctx->commandPool != VK_NULL_HANDLE) {
-            vkDestroyCommandPool(ctx->device, ctx->commandPool, nullptr);
-            ctx->commandPool = VK_NULL_HANDLE;
-        }
-        ctx->commandBuffers.clear();
-
-        // Destroy graphics pipeline
-        if (ctx->graphicsPipeline != VK_NULL_HANDLE) {
-            vkDestroyPipeline(ctx->device, ctx->graphicsPipeline, nullptr);
-            ctx->graphicsPipeline = VK_NULL_HANDLE;
-        }
-
-        // Destroy pipeline layout
-        if (ctx->pipelineLayout != VK_NULL_HANDLE) {
-            vkDestroyPipelineLayout(ctx->device, ctx->pipelineLayout, nullptr);
-            ctx->pipelineLayout = VK_NULL_HANDLE;
-        }
-
-        // Destroy vertex buffer
-        if (ctx->vertexBuffer != VK_NULL_HANDLE) {
-            vkDestroyBuffer(ctx->device, ctx->vertexBuffer, nullptr);
-            ctx->vertexBuffer = VK_NULL_HANDLE;
-        }
-        if (ctx->vertexBufferMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(ctx->device, ctx->vertexBufferMemory, nullptr);
-            ctx->vertexBufferMemory = VK_NULL_HANDLE;
-        }
-
-        // Destroy framebuffers
-        for (auto framebuffer : ctx->framebuffers) {
-            if (framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(ctx->device, framebuffer, nullptr);
-            }
-        }
-        ctx->framebuffers.clear();
-
-        // Destroy render pass
-        if (ctx->renderPass != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(ctx->device, ctx->renderPass, nullptr);
-            ctx->renderPass = VK_NULL_HANDLE;
-        }
-
-        // Destroy image views
-        for (auto imageView : ctx->swapchainImageViews) {
-            if (imageView != VK_NULL_HANDLE) {
-                vkDestroyImageView(ctx->device, imageView, nullptr);
-            }
-        }
-        ctx->swapchainImageViews.clear();
-
-        // Destroy swapchain
-        if (ctx->swapchain != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(ctx->device, ctx->swapchain, nullptr);
-            ctx->swapchain = VK_NULL_HANDLE;
-        }
-
-        vkDestroyDevice(ctx->device, nullptr);
-        ctx->device = VK_NULL_HANDLE;
-    }
-
-    if (ctx->surface != VK_NULL_HANDLE) {
-        vkDestroySurfaceKHR(ctx->instance, ctx->surface, nullptr);
-        ctx->surface = VK_NULL_HANDLE;
-    }
-
-#ifndef NDEBUG
-    if (ctx->debugMessenger != VK_NULL_HANDLE) {
-        destroyDebugUtilsMessenger(ctx->instance, ctx->debugMessenger, nullptr);
-        ctx->debugMessenger = VK_NULL_HANDLE;
-    }
-#endif
-
-    if (ctx->instance != VK_NULL_HANDLE) {
-        vkDestroyInstance(ctx->instance, nullptr);
-        ctx->instance = VK_NULL_HANDLE;
-    }
-
-    if (ctx->nativeWindow != nullptr) {
-        ANativeWindow_release(ctx->nativeWindow);
-        ctx->nativeWindow = nullptr;
-    }
-
-    ctx->initialized = false;
-}
+// Cleanup is now handled automatically by RAII - unique_ptr members are destroyed
+// in reverse declaration order when VulkanContext is deleted.
 
 extern "C" {
 
@@ -1202,115 +1405,76 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeInit(
 
     LOGI("Initializing Vulkan...");
 
-    auto* ctx = new VulkanContext();
+    // Use unique_ptr for RAII - if any step fails, ctx is automatically cleaned up
+    auto ctx = std::make_unique<VulkanContext>();
 
     // Get native window from Android Surface
-    ctx->nativeWindow = ANativeWindow_fromSurface(env, surface);
-    if (ctx->nativeWindow == nullptr) {
+    ctx->nativeWindow = UniqueNativeWindow(ANativeWindow_fromSurface(env, surface));
+    if (!ctx->nativeWindow) {
         LOGE("Failed to get native window from surface");
-        delete ctx;
-        return 0;
+        return 0;  // ctx automatically cleaned up
     }
 
-    ctx->width = ANativeWindow_getWidth(ctx->nativeWindow);
-    ctx->height = ANativeWindow_getHeight(ctx->nativeWindow);
+    ctx->width = ANativeWindow_getWidth(ctx->nativeWindow.get());
+    ctx->height = ANativeWindow_getHeight(ctx->nativeWindow.get());
     LOGI("Surface size: %dx%d", ctx->width, ctx->height);
 
     // Create Vulkan instance
-    if (!createInstance(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createInstance(ctx.get())) return 0;
 
     // Create Android surface
-    if (!createSurface(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createSurface(ctx.get())) return 0;
 
     // Pick physical device
-    if (!pickPhysicalDevice(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!pickPhysicalDevice(ctx.get())) return 0;
 
     // Create logical device
-    if (!createLogicalDevice(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createLogicalDevice(ctx.get())) return 0;
 
     // Create swapchain
-    if (!createSwapchain(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createSwapchain(ctx.get())) return 0;
 
     // Create image views
-    if (!createImageViews(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createImageViews(ctx.get())) return 0;
 
     // Create render pass
-    if (!createRenderPass(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createRenderPass(ctx.get())) return 0;
+
+    // Create descriptor set layout (before pipeline)
+    if (!createDescriptorSetLayout(ctx.get())) return 0;
+
+    // Create uniform buffer
+    if (!createUniformBuffer(ctx.get())) return 0;
+
+    // Create descriptor pool and set
+    if (!createDescriptorPool(ctx.get())) return 0;
 
     // Create graphics pipeline
-    if (!createGraphicsPipeline(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createGraphicsPipelines(ctx.get())) return 0;
 
-    // Create vertex buffer
-    if (!createVertexBuffer(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    // Create vertex buffer (legacy demo)
+    if (!createVertexBuffer(ctx.get())) return 0;
+
+    // Create dynamic vertex buffer
+    if (!createDynamicVertexBuffer(ctx.get())) return 0;
 
     // Create framebuffers
-    if (!createFramebuffers(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createFramebuffers(ctx.get())) return 0;
 
     // Create command pool
-    if (!createCommandPool(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createCommandPool(ctx.get())) return 0;
 
     // Create command buffers
-    if (!createCommandBuffers(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createCommandBuffers(ctx.get())) return 0;
 
     // Create sync objects
-    if (!createSyncObjects(ctx)) {
-        cleanup(ctx);
-        delete ctx;
-        return 0;
-    }
+    if (!createSyncObjects(ctx.get())) return 0;
 
     ctx->initialized = true;
     LOGI("Vulkan initialization complete!");
 
-    return reinterpret_cast<jlong>(ctx);
+    // Transfer ownership to JNI - caller is responsible for calling nativeDestroy
+    return reinterpret_cast<jlong>(ctx.release());
 }
 
 JNIEXPORT void JNICALL
@@ -1323,12 +1487,13 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeRender(
     }
 
     // Wait for previous frame
-    vkWaitForFences(ctx->device, 1, &ctx->inFlightFences[ctx->currentFrame], VK_TRUE, UINT64_MAX);
+    VkFence inFlightFence = ctx->inFlightFences[ctx->currentFrame].get();
+    vkWaitForFences(ctx->device.get(), 1, &inFlightFence, VK_TRUE, UINT64_MAX);
 
     // Acquire next swapchain image
     uint32_t imageIndex;
-    VkResult result = vkAcquireNextImageKHR(ctx->device, ctx->swapchain, UINT64_MAX,
-                                            ctx->imageAvailableSemaphores[ctx->currentFrame],
+    VkResult result = vkAcquireNextImageKHR(ctx->device.get(), ctx->swapchain.get(), UINT64_MAX,
+                                            ctx->imageAvailableSemaphores[ctx->currentFrame].get(),
                                             VK_NULL_HANDLE, &imageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -1339,7 +1504,7 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeRender(
         return;
     }
 
-    vkResetFences(ctx->device, 1, &ctx->inFlightFences[ctx->currentFrame]);
+    vkResetFences(ctx->device.get(), 1, &inFlightFence);
 
     // Reset and record command buffer with rotation angle
     vkResetCommandBuffer(ctx->commandBuffers[ctx->currentFrame], 0);
@@ -1351,7 +1516,7 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeRender(
     VkSubmitInfo submitInfo{};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-    VkSemaphore waitSemaphores[] = {ctx->imageAvailableSemaphores[ctx->currentFrame]};
+    VkSemaphore waitSemaphores[] = {ctx->imageAvailableSemaphores[ctx->currentFrame].get()};
     VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
     submitInfo.waitSemaphoreCount = 1;
     submitInfo.pWaitSemaphores = waitSemaphores;
@@ -1359,11 +1524,11 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeRender(
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &ctx->commandBuffers[ctx->currentFrame];
 
-    VkSemaphore signalSemaphores[] = {ctx->renderFinishedSemaphores[ctx->currentFrame]};
+    VkSemaphore signalSemaphores[] = {ctx->renderFinishedSemaphores[ctx->currentFrame].get()};
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    result = vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, ctx->inFlightFences[ctx->currentFrame]);
+    result = vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, ctx->inFlightFences[ctx->currentFrame].get());
     if (result != VK_SUCCESS) {
         LOGE("Failed to submit draw command buffer: %s (%d)", vkResultToString(result), result);
         return;
@@ -1375,7 +1540,7 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeRender(
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores = signalSemaphores;
 
-    VkSwapchainKHR swapchains[] = {ctx->swapchain};
+    VkSwapchainKHR swapchains[] = {ctx->swapchain.get()};
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapchains;
     presentInfo.pImageIndices = &imageIndex;
@@ -1429,9 +1594,289 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeDestroy(
     }
 
     LOGI("Destroying Vulkan context...");
-    cleanup(ctx);
+    // RAII handles all cleanup - just delete the context
+    // The DeviceDeleter calls vkDeviceWaitIdle before destroying
     delete ctx;
     LOGI("Vulkan context destroyed");
+}
+
+// New Phase 2 API: Set view matrix
+JNIEXPORT void JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeSetViewMatrix(
+    JNIEnv* env, jobject obj, jlong contextHandle, jfloatArray matrixArray) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    if (ctx == nullptr || !ctx->initialized || ctx->uniformBufferMapped == nullptr) {
+        return;
+    }
+
+    jfloat* matrix = env->GetFloatArrayElements(matrixArray, nullptr);
+    if (matrix == nullptr) {
+        return;
+    }
+
+    memcpy(ctx->viewMatrix, matrix, sizeof(float) * 16);
+    memcpy(ctx->uniformBufferMapped, ctx->viewMatrix, sizeof(float) * 16);
+
+    env->ReleaseFloatArrayElements(matrixArray, matrix, JNI_ABORT);
+}
+
+// New Phase 2 API: Set projection matrix
+JNIEXPORT void JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeSetProjectionMatrix(
+    JNIEnv* env, jobject obj, jlong contextHandle, jfloatArray matrixArray) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    if (ctx == nullptr || !ctx->initialized || ctx->uniformBufferMapped == nullptr) {
+        return;
+    }
+
+    jfloat* matrix = env->GetFloatArrayElements(matrixArray, nullptr);
+    if (matrix == nullptr) {
+        return;
+    }
+
+    memcpy(ctx->projectionMatrix, matrix, sizeof(float) * 16);
+    memcpy(static_cast<char*>(ctx->uniformBufferMapped) + sizeof(float) * 16,
+           ctx->projectionMatrix, sizeof(float) * 16);
+
+    env->ReleaseFloatArrayElements(matrixArray, matrix, JNI_ABORT);
+}
+
+// New Phase 2 API: Begin frame
+JNIEXPORT jboolean JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeBeginFrame(
+    JNIEnv* env, jobject obj, jlong contextHandle) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    if (ctx == nullptr || !ctx->initialized) {
+        return JNI_FALSE;
+    }
+
+    // Wait for previous frame
+    VkFence inFlightFence = ctx->inFlightFences[ctx->currentFrame].get();
+    vkWaitForFences(ctx->device.get(), 1, &inFlightFence, VK_TRUE, UINT64_MAX);
+
+    // Acquire next swapchain image
+    VkResult result = vkAcquireNextImageKHR(ctx->device.get(), ctx->swapchain.get(), UINT64_MAX,
+                                            ctx->imageAvailableSemaphores[ctx->currentFrame].get(),
+                                            VK_NULL_HANDLE, &ctx->currentImageIndex);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreateSwapchain(ctx);
+        return JNI_FALSE;
+    } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+        LOGE("Failed to acquire swapchain image: %s (%d)", vkResultToString(result), result);
+        return JNI_FALSE;
+    }
+
+    vkResetFences(ctx->device.get(), 1, &inFlightFence);
+
+    // Reset command buffer
+    vkResetCommandBuffer(ctx->commandBuffers[ctx->currentFrame], 0);
+
+    // Begin command buffer
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    result = vkBeginCommandBuffer(ctx->commandBuffers[ctx->currentFrame], &beginInfo);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to begin command buffer: %s (%d)", vkResultToString(result), result);
+        return JNI_FALSE;
+    }
+
+    // Begin render pass
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = ctx->renderPass.get();
+    renderPassInfo.framebuffer = ctx->framebuffers[ctx->currentImageIndex].get();
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = ctx->swapchainExtent;
+
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.2f, 1.0f}}};
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
+
+    vkCmdBeginRenderPass(ctx->commandBuffers[ctx->currentFrame], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Note: Pipeline is bound per-draw in nativeDraw() to support different primitive types
+
+    // Bind descriptor set (uniform buffer)
+    vkCmdBindDescriptorSets(ctx->commandBuffers[ctx->currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                           ctx->pipelineLayout.get(), 0, 1, &ctx->descriptorSet, 0, nullptr);
+
+    // Set viewport and scissor
+    VkViewport viewport{};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(ctx->swapchainExtent.width);
+    viewport.height = static_cast<float>(ctx->swapchainExtent.height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    vkCmdSetViewport(ctx->commandBuffers[ctx->currentFrame], 0, 1, &viewport);
+
+    VkRect2D scissor{};
+    scissor.offset = {0, 0};
+    scissor.extent = ctx->swapchainExtent;
+    vkCmdSetScissor(ctx->commandBuffers[ctx->currentFrame], 0, 1, &scissor);
+
+    // Reset dynamic vertex buffer offset for new frame
+    ctx->dynamicVertexBufferOffset = 0;
+    ctx->inFrame = true;
+
+    return JNI_TRUE;
+}
+
+// New Phase 2 API: Draw batch
+JNIEXPORT void JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeDraw(
+    JNIEnv* env, jobject obj, jlong contextHandle,
+    jint primitiveType, jfloatArray verticesArray, jint vertexCount, jfloatArray transformArray) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    if (ctx == nullptr || !ctx->initialized || !ctx->inFrame) {
+        return;
+    }
+
+    // Get vertex data
+    jfloat* vertices = env->GetFloatArrayElements(verticesArray, nullptr);
+    if (vertices == nullptr) {
+        return;
+    }
+
+    // Calculate size needed (7 floats per vertex)
+    size_t vertexDataSize = vertexCount * 7 * sizeof(float);
+
+    // Check if we have room in the dynamic buffer
+    if (ctx->dynamicVertexBufferOffset + vertexDataSize > ctx->dynamicVertexBufferSize) {
+        LOGE("Dynamic vertex buffer overflow! Need %zu bytes, have %zu",
+             ctx->dynamicVertexBufferOffset + vertexDataSize, ctx->dynamicVertexBufferSize);
+        env->ReleaseFloatArrayElements(verticesArray, vertices, JNI_ABORT);
+        return;
+    }
+
+    // Copy vertex data to dynamic buffer
+    memcpy(static_cast<char*>(ctx->dynamicVertexBufferMapped) + ctx->dynamicVertexBufferOffset,
+           vertices, vertexDataSize);
+
+    env->ReleaseFloatArrayElements(verticesArray, vertices, JNI_ABORT);
+
+    // Get transform matrix (or use identity)
+    float transform[16];
+    if (transformArray != nullptr) {
+        jfloat* transformData = env->GetFloatArrayElements(transformArray, nullptr);
+        if (transformData != nullptr) {
+            memcpy(transform, transformData, sizeof(float) * 16);
+            env->ReleaseFloatArrayElements(transformArray, transformData, JNI_ABORT);
+        } else {
+            math::identity(transform);
+        }
+    } else {
+        math::identity(transform);
+    }
+
+    // Select pipeline based on primitive type
+    // PrimitiveType enum: POINTS=0, LINES=1, TRIANGLES=2
+    VkPipeline pipeline;
+    switch (primitiveType) {
+        case 0:  // POINTS
+            pipeline = ctx->pointPipeline.get();
+            break;
+        case 1:  // LINES
+            pipeline = ctx->linePipeline.get();
+            break;
+        case 2:  // TRIANGLES
+        default:
+            pipeline = ctx->trianglePipeline.get();
+            break;
+    }
+    vkCmdBindPipeline(ctx->commandBuffers[ctx->currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    // Push model matrix
+    vkCmdPushConstants(ctx->commandBuffers[ctx->currentFrame], ctx->pipelineLayout.get(),
+                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(transform), transform);
+
+    // Bind vertex buffer at current offset
+    VkBuffer buffers[] = {ctx->dynamicVertexBuffer.get()};
+    VkDeviceSize offsets[] = {ctx->dynamicVertexBufferOffset};
+    vkCmdBindVertexBuffers(ctx->commandBuffers[ctx->currentFrame], 0, 1, buffers, offsets);
+
+    // Draw
+    vkCmdDraw(ctx->commandBuffers[ctx->currentFrame], vertexCount, 1, 0, 0);
+
+    // Advance offset for next draw call
+    ctx->dynamicVertexBufferOffset += vertexDataSize;
+}
+
+// New Phase 2 API: End frame
+JNIEXPORT void JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeEndFrame(
+    JNIEnv* env, jobject obj, jlong contextHandle) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    if (ctx == nullptr || !ctx->initialized || !ctx->inFrame) {
+        return;
+    }
+
+    ctx->inFrame = false;
+
+    // End render pass
+    vkCmdEndRenderPass(ctx->commandBuffers[ctx->currentFrame]);
+
+    // End command buffer
+    VkResult result = vkEndCommandBuffer(ctx->commandBuffers[ctx->currentFrame]);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to end command buffer: %s (%d)", vkResultToString(result), result);
+        return;
+    }
+
+    // Submit command buffer
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore waitSemaphores[] = {ctx->imageAvailableSemaphores[ctx->currentFrame].get()};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &ctx->commandBuffers[ctx->currentFrame];
+
+    VkSemaphore signalSemaphores[] = {ctx->renderFinishedSemaphores[ctx->currentFrame].get()};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    result = vkQueueSubmit(ctx->graphicsQueue, 1, &submitInfo, ctx->inFlightFences[ctx->currentFrame].get());
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to submit draw command buffer: %s (%d)", vkResultToString(result), result);
+        return;
+    }
+
+    // Present
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+
+    VkSwapchainKHR swapchains[] = {ctx->swapchain.get()};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapchains;
+    presentInfo.pImageIndices = &ctx->currentImageIndex;
+
+    result = vkQueuePresentKHR(ctx->presentQueue, &presentInfo);
+
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        recreateSwapchain(ctx);
+    } else if (result != VK_SUCCESS) {
+        LOGE("Failed to present swapchain image: %s (%d)", vkResultToString(result), result);
+    }
+
+    ctx->currentFrame = (ctx->currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    // Log occasionally
+    if (++ctx->frameCount % LOG_FRAME_INTERVAL == 0) {
+        LOGI("Rendered %d frames (new API)", ctx->frameCount);
+    }
 }
 
 } // extern "C"

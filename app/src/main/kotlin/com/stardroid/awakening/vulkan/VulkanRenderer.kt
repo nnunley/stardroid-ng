@@ -2,6 +2,7 @@ package com.stardroid.awakening.vulkan
 
 import android.view.Surface
 import com.stardroid.awakening.renderer.DrawBatch
+import com.stardroid.awakening.renderer.Matrix
 import com.stardroid.awakening.renderer.RendererInterface
 
 /**
@@ -13,6 +14,12 @@ import com.stardroid.awakening.renderer.RendererInterface
 class VulkanRenderer : RendererInterface {
     private var nativeContext: Long = 0
     private var _frameNumber: Long = 0
+    private var inFrame: Boolean = false
+
+    // Cached matrices
+    private var viewMatrix: FloatArray = Matrix.identity()
+    private var projectionMatrix: FloatArray = Matrix.identity()
+    private var matricesDirty: Boolean = true
 
     // RendererInterface implementation
 
@@ -23,6 +30,8 @@ class VulkanRenderer : RendererInterface {
         nativeContext = nativeInit(surface)
         if (nativeContext != 0L) {
             nativeResize(nativeContext, width, height)
+            // Initialize with identity matrices
+            matricesDirty = true
         }
         return nativeContext != 0L
     }
@@ -42,27 +51,45 @@ class VulkanRenderer : RendererInterface {
 
     override fun beginFrame(): Boolean {
         if (nativeContext == 0L) return false
-        // For now, always return true - native handles frame pacing
-        return true
+
+        // Upload matrices if changed
+        if (matricesDirty) {
+            nativeSetViewMatrix(nativeContext, viewMatrix)
+            nativeSetProjectionMatrix(nativeContext, projectionMatrix)
+            matricesDirty = false
+        }
+
+        inFrame = nativeBeginFrame(nativeContext)
+        return inFrame
     }
 
     override fun endFrame() {
-        if (nativeContext != 0L) {
-            _frameNumber++
-        }
+        if (!inFrame) return
+        nativeEndFrame(nativeContext)
+        inFrame = false
+        _frameNumber++
     }
 
     override fun draw(batch: DrawBatch) {
-        // TODO: Implement dynamic vertex buffer upload in Phase 2
-        // For now, this is a no-op - we use render(angle) for the demo
+        if (!inFrame) return
+        val transform = batch.transform ?: Matrix.identity()
+        nativeDraw(
+            nativeContext,
+            batch.type.ordinal,
+            batch.vertices,
+            batch.vertexCount,
+            transform
+        )
     }
 
     override fun setViewMatrix(matrix: FloatArray) {
-        // TODO: Implement in Phase 2 with uniform buffers
+        viewMatrix = matrix.copyOf()
+        matricesDirty = true
     }
 
     override fun setProjectionMatrix(matrix: FloatArray) {
-        // TODO: Implement in Phase 2 with uniform buffers
+        projectionMatrix = matrix.copyOf()
+        matricesDirty = true
     }
 
     override val isInitialized: Boolean
@@ -107,6 +134,19 @@ class VulkanRenderer : RendererInterface {
     private external fun nativeRender(context: Long, angle: Float)
     private external fun nativeResize(context: Long, width: Int, height: Int)
     private external fun nativeDestroy(context: Long)
+
+    // New Phase 2 JNI methods
+    private external fun nativeBeginFrame(context: Long): Boolean
+    private external fun nativeEndFrame(context: Long)
+    private external fun nativeDraw(
+        context: Long,
+        primitiveType: Int,
+        vertices: FloatArray,
+        vertexCount: Int,
+        transform: FloatArray
+    )
+    private external fun nativeSetViewMatrix(context: Long, matrix: FloatArray)
+    private external fun nativeSetProjectionMatrix(context: Long, matrix: FloatArray)
 
     companion object {
         private var libraryLoaded = false

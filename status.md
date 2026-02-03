@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Phase:** Rendering Abstraction Phase 1 - Implementation Complete
+**Phase:** Rendering Abstraction Phase 3 - Multiple Primitive Types Complete
 
 **Last Updated:** 2026-02-03
 
@@ -79,36 +79,62 @@
   - Animate triangle rotation at ~60 FPS using frame time limiting
   - Verified: `./gradlew assembleDebug` builds successfully
 
+- [x] Bootstrap Phase 9: Polish
+  - [x] Test on real Android device (Mali-G715 GPU)
+  - [x] Verify 60 FPS performance (~61 FPS achieved)
+  - [x] Verify no validation layer errors in logcat
+  - [x] Add FPS overlay (toggleable via tap)
+  - [ ] Test on additional Android devices
+
+- [x] Rendering Abstraction Phase 1: Design & Implementation
+  - [x] Design rendering abstraction layer
+  - [x] Create spec: `specs/rendering/abstraction.md`
+  - [x] Create `RendererInterface.kt`
+  - [x] Create `Primitive.kt` (PrimitiveType, Vertex, DrawBatch)
+  - [x] Create `Matrix.kt` (identity, perspective, rotateZ, multiply)
+  - [x] Refactor `VulkanRenderer.kt` to implement `RendererInterface`
+  - [x] Keep legacy render(angle) for demo backwards compatibility
+  - [x] Demo: Triangle still renders at 60 FPS through abstraction layer
+
+- [x] Rendering Abstraction Phase 2: Dynamic Vertex Buffers
+  - [x] Set up gtest for C++ unit tests
+  - [x] Extract math utilities to testable module (`math_utils.h`)
+  - [x] Write gtest tests for matrix operations (8 tests, all pass)
+  - [x] Update shaders: vec3 position + vec4 color (7 floats)
+  - [x] Add uniform buffer for view/projection matrices (128 bytes)
+  - [x] Add descriptor set layout, pool, and set for UBO
+  - [x] Add 64KB dynamic vertex buffer (persistently mapped)
+  - [x] Implement new JNI entry points:
+    - nativeBeginFrame, nativeEndFrame
+    - nativeDraw (with dynamic vertices and model transform)
+    - nativeSetViewMatrix, nativeSetProjectionMatrix
+  - [x] Update VulkanRenderer with full RendererInterface implementation
+  - [x] Update VulkanSurfaceView demo to render two triangles
+  - [x] Demo: One rotating RGB triangle, one static YCM triangle
+  - [x] **COMPLETED**: Device verified (two triangles render, 60 FPS, no validation errors)
+
+- [x] **Rendering Abstraction Phase 3: Multiple Primitive Types**
+  - [x] Update vertex shader: Add `gl_PointSize = 4.0` for point rendering
+  - [x] Refactor C++ to support multiple pipelines (POINTS, LINES, TRIANGLES)
+  - [x] Create separate graphics pipelines for each topology
+  - [x] Update `nativeDraw` to select appropriate pipeline per primitive type
+  - [x] Disable face culling for points and lines (no front/back)
+  - [x] Update demo to render points (stars) and lines (constellation lines)
+  - [x] Verified: `./gradlew assembleDebug` builds successfully (8.3MB APK)
+  - [x] Ready for device testing
+
 ## Next Tasks
 
-1. **Bootstrap Phase 9:** Polish
-   - [x] Test on real Android device (Mali-G715 GPU)
-   - [x] Verify 60 FPS performance (~61 FPS achieved)
-   - [x] Verify no validation layer errors in logcat
-   - [x] Add FPS overlay (toggleable via tap)
-   - [ ] Test on additional Android devices
+1. **Star Rendering and Data Layer**
+   - [ ] Define star data format (FlatBuffers)
+   - [ ] Load star catalog (bright stars, Messier objects)
+   - [ ] Render stars as points through abstraction API
+   - [ ] Render constellation lines and grids
 
-2. **Rendering Abstraction Phase 1:** Design & Specification (COMPLETE)
-   - [x] Design rendering abstraction layer
-   - [x] Create spec: `specs/rendering/abstraction.md`
-   - [x] Commit: `docs(rendering): Define rendering abstraction layer specification`
-
-3. **Rendering Abstraction Phase 1.5:** Implementation (COMPLETE)
-   - [x] Create `RendererInterface.kt`
-   - [x] Create `Primitive.kt` (PrimitiveType, Vertex, DrawBatch)
-   - [x] Create `Matrix.kt` (identity, perspective, rotateZ, multiply)
-   - [x] Refactor `VulkanRenderer.kt` to implement `RendererInterface`
-   - [x] Keep legacy render(angle) for demo backwards compatibility
-   - [x] Update `VulkanSurfaceView.kt` to use new initialize(surface, width, height)
-   - [x] Demo: Triangle still renders at 60 FPS through abstraction layer
-   - [x] Commit: `feat(renderer): Add rendering abstraction layer (Phase 1)`
-
-3. **Rendering Abstraction Phase 2:** Dynamic Vertex Buffers
-   - [ ] Implement `nativeDraw()` with dynamic vertex data
-   - [ ] Support multiple draw calls per frame
-   - [ ] Demo: Multiple shapes with different transforms
-
-4. **Post-Abstraction:** Star rendering and data layer
+2. **Coordinate System and Transforms**
+   - [ ] Implement celestial coordinate system (RA/Dec to screen)
+   - [ ] Device orientation sensor integration
+   - [ ] Real-time sky mapping
 
 ## Decisions Made
 
@@ -119,12 +145,24 @@
 - Renderer abstraction layer enables future backend swapping (OpenGL, AR)
 - Kept legacy render(angle) API for backwards compatibility during transition
 - All matrices use column-major format (Vulkan/GLSL standard)
+- C++ math utilities extracted to `math_utils.h` for testability
+- Using gtest (Google Test) for C++ unit testing
+- Uniform buffer for view/projection (AR integration ready)
+- Push constants for model matrix (per-draw-call transforms)
+- 7-float vertex format: xyz position + rgba color (3D star positions)
+- Multiple pipelines approach: separate pipeline per topology type (simpler, more portable)
+- Face culling disabled for POINTS and LINES (only triangles use back-face culling)
+- Dynamic pipeline selection in nativeDraw based on PrimitiveType enum
 
 ## Build Verification
 
 ```bash
 ./gradlew assembleDebug  # SUCCESS
-# Vulkan demo with rotating triangle is feature-complete
+# Vulkan demo with:
+#   - Two rotating/static triangles (RGB and YCM)
+#   - 4 rendered points (white stars)
+#   - 2 rendered line segments (constellation lines)
+#   - APK size: 8.3MB
 # Ready for device testing
 ```
 
@@ -140,10 +178,47 @@
 - Graphics pipeline created and bound ✓
 - SPIR-V shaders compiled and embedded ✓
 - Vertex buffer with triangle data ✓
-- **Rotating colored triangle animation ✓**
-- **Renderer abstraction layer (RendererInterface) ✓**
-- **Primitive types (PrimitiveType, Vertex, DrawBatch) ✓**
-- **Matrix utilities (identity, perspective, rotateZ, multiply) ✓**
+- Rotating colored triangle animation ✓
+- Renderer abstraction layer (RendererInterface) ✓
+- Primitive types (PrimitiveType, Vertex, DrawBatch) ✓
+- Matrix utilities (identity, perspective, rotateZ, multiply) ✓
+- **C++ unit tests with gtest (8 tests passing) ✓**
+- **Dynamic vertex buffer (64KB, persistently mapped) ✓**
+- **Uniform buffer for view/projection matrices ✓**
+- **New API: beginFrame/draw/endFrame pattern ✓**
+- **Multiple draw calls per frame ✓**
+- **Per-draw-call model transforms ✓**
+- **Multiple primitive types (POINTS, LINES, TRIANGLES) ✓**
+- **Separate pipelines per topology (points, lines, triangles) ✓**
+- **Dynamic pipeline selection in draw calls ✓**
+- **Points render as dots (4.0 pixel size) ✓**
+- **Lines render with 1.0 line width ✓**
+- **Demo shows all three primitive types ✓**
+
+## Phase 3 API Summary
+
+Same as Phase 2, now supporting:
+- `PrimitiveType.POINTS` - renders as dot sprites
+- `PrimitiveType.LINES` - renders as line segments
+- `PrimitiveType.TRIANGLES` - renders as filled triangles
+
+## Phase 2 API Summary
+
+```kotlin
+// Kotlin usage
+renderer.setProjectionMatrix(Matrix.perspective(...))
+renderer.setViewMatrix(Matrix.identity())
+
+if (renderer.beginFrame()) {
+    renderer.draw(DrawBatch(
+        type = PrimitiveType.TRIANGLES,
+        vertices = floatArrayOf(x, y, z, r, g, b, a, ...),
+        vertexCount = 3,
+        transform = Matrix.rotateZ(angle)
+    ))
+    renderer.endFrame()
+}
+```
 
 ## Vulkan Demo Acceptance Criteria
 
@@ -152,3 +227,4 @@
 - [x] App displays a rotating colored triangle on screen
 - [x] No crashes or validation errors in logcat
 - [x] Frame rate stable at 60 FPS (verified: ~61 FPS on Mali-G715)
+- [ ] **Phase 2:** Two triangles render via dynamic API

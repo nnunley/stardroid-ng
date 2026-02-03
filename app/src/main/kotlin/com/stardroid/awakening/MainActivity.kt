@@ -25,14 +25,14 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
-        // Create FPS overlay in top-left corner
+        // Create FPS overlay in bottom-left corner
         fpsOverlay = FpsOverlay(this)
         val fpsParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
-            setMargins(16, 120, 0, 0) // Below status bar
+            gravity = Gravity.BOTTOM or Gravity.START
+            setMargins(16, 0, 0, 48)
         }
         container.addView(fpsOverlay, fpsParams)
 
