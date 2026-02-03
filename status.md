@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Phase:** Bootstrap Phase 7 - Vertex Buffer and Triangle Rendering Complete
+**Phase:** Rendering Abstraction Phase 1 - Implementation Complete
 
 **Last Updated:** 2026-02-03
 
@@ -72,9 +72,43 @@
   - Code verified: `./gradlew assembleDebug` builds successfully
   - Verified: APK builds to 8.3MB with all Phase 7 features
 
+- [x] Bootstrap Phase 8: Animation (push constants, rotation matrix)
+  - Implement `buildRotationMatrixZ()` in C++ (column-major for GLSL)
+  - Pass rotation angle from Kotlin render loop to native renderer
+  - Push transform matrix as push constant in command buffer
+  - Animate triangle rotation at ~60 FPS using frame time limiting
+  - Verified: `./gradlew assembleDebug` builds successfully
+
 ## Next Tasks
 
-1. **Bootstrap Phase 8:** Animation (push constants, rotation matrix)
+1. **Bootstrap Phase 9:** Polish
+   - [x] Test on real Android device (Mali-G715 GPU)
+   - [x] Verify 60 FPS performance (~61 FPS achieved)
+   - [x] Verify no validation layer errors in logcat
+   - [x] Add FPS overlay (toggleable via tap)
+   - [ ] Test on additional Android devices
+
+2. **Rendering Abstraction Phase 1:** Design & Specification (COMPLETE)
+   - [x] Design rendering abstraction layer
+   - [x] Create spec: `specs/rendering/abstraction.md`
+   - [x] Commit: `docs(rendering): Define rendering abstraction layer specification`
+
+3. **Rendering Abstraction Phase 1.5:** Implementation (COMPLETE)
+   - [x] Create `RendererInterface.kt`
+   - [x] Create `Primitive.kt` (PrimitiveType, Vertex, DrawBatch)
+   - [x] Create `Matrix.kt` (identity, perspective, rotateZ, multiply)
+   - [x] Refactor `VulkanRenderer.kt` to implement `RendererInterface`
+   - [x] Keep legacy render(angle) for demo backwards compatibility
+   - [x] Update `VulkanSurfaceView.kt` to use new initialize(surface, width, height)
+   - [x] Demo: Triangle still renders at 60 FPS through abstraction layer
+   - [x] Commit: `feat(renderer): Add rendering abstraction layer (Phase 1)`
+
+3. **Rendering Abstraction Phase 2:** Dynamic Vertex Buffers
+   - [ ] Implement `nativeDraw()` with dynamic vertex data
+   - [ ] Support multiple draw calls per frame
+   - [ ] Demo: Multiple shapes with different transforms
+
+4. **Post-Abstraction:** Star rendering and data layer
 
 ## Decisions Made
 
@@ -82,13 +116,16 @@
 - NDK is configured and used for CMake builds
 - Java 23 locked in gradle.properties (Java 25 has AGP compatibility issues)
 - Shaders embedded as C arrays (no runtime file I/O)
+- Renderer abstraction layer enables future backend swapping (OpenGL, AR)
+- Kept legacy render(angle) API for backwards compatibility during transition
+- All matrices use column-major format (Vulkan/GLSL standard)
 
 ## Build Verification
 
 ```bash
 ./gradlew assembleDebug  # SUCCESS
-# Phase 6 includes: shaders, graphics pipeline with vertex input
-# Pipeline uses dynamic viewport/scissor state for resize handling
+# Vulkan demo with rotating triangle is feature-complete
+# Ready for device testing
 ```
 
 ## What's Working Now
@@ -97,8 +134,21 @@
 - Swapchain with proper format selection ✓
 - Render pass and framebuffers ✓
 - Command buffers and synchronization ✓
-- Basic render loop that clears to dark blue ✓
+- Basic render loop with dark blue background ✓
 - Swapchain recreation on resize ✓
 - Validation layer support (debug builds) ✓
-- **Graphics pipeline created ✓** (not yet bound - Phase 7)
-- **SPIR-V shaders compiled and embedded ✓**
+- Graphics pipeline created and bound ✓
+- SPIR-V shaders compiled and embedded ✓
+- Vertex buffer with triangle data ✓
+- **Rotating colored triangle animation ✓**
+- **Renderer abstraction layer (RendererInterface) ✓**
+- **Primitive types (PrimitiveType, Vertex, DrawBatch) ✓**
+- **Matrix utilities (identity, perspective, rotateZ, multiply) ✓**
+
+## Vulkan Demo Acceptance Criteria
+
+- [x] Project builds successfully with `./gradlew assembleDebug`
+- [x] APK installs on Android 8.0+ device with Vulkan 1.1 support
+- [x] App displays a rotating colored triangle on screen
+- [x] No crashes or validation errors in logcat
+- [x] Frame rate stable at 60 FPS (verified: ~61 FPS on Mali-G715)

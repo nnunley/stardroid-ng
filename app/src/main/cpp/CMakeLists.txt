@@ -91,9 +91,14 @@ target_link_libraries(vulkan_wrapper
     ${vulkan-lib}
 )
 
-# Enable position-independent code
+# Enable position-independent code and 16KB page alignment (Android 15+)
 set_target_properties(vulkan_wrapper PROPERTIES
     POSITION_INDEPENDENT_CODE ON
+)
+
+# 16KB page size compatibility for Android 15+
+target_link_options(vulkan_wrapper PRIVATE
+    "-Wl,-z,max-page-size=16384"
 )
 
 # Set warning flags

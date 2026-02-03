@@ -9,6 +9,7 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 
 #include "shaders.h"
 
@@ -1002,6 +1003,19 @@ static void cleanupSwapchain(VulkanContext* ctx) {
     }
 }
 
+// Build a Z-axis rotation matrix (column-major for Vulkan/GLSL)
+static void buildRotationMatrixZ(float angleDegrees, float* matrix) {
+    float angleRadians = angleDegrees * 3.14159265358979f / 180.0f;
+    float cosA = std::cos(angleRadians);
+    float sinA = std::sin(angleRadians);
+
+    // Column-major order for GLSL compatibility
+    matrix[0] = cosA;   matrix[4] = -sinA;  matrix[8]  = 0.0f;  matrix[12] = 0.0f;
+    matrix[1] = sinA;   matrix[5] = cosA;   matrix[9]  = 0.0f;  matrix[13] = 0.0f;
+    matrix[2] = 0.0f;   matrix[6] = 0.0f;   matrix[10] = 1.0f;  matrix[14] = 0.0f;
+    matrix[3] = 0.0f;   matrix[7] = 0.0f;   matrix[11] = 0.0f;  matrix[15] = 1.0f;
+}
+
 // Recreate swapchain (for resize)
 static bool recreateSwapchain(VulkanContext* ctx) {
     LOGI("Recreating swapchain...");
@@ -1018,8 +1032,8 @@ static bool recreateSwapchain(VulkanContext* ctx) {
     return true;
 }
 
-// Record command buffer for a frame
-static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+// Record command buffer for a frame with rotation angle
+static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffer, uint32_t imageIndex, float angle) {
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
@@ -1067,14 +1081,10 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
     VkDeviceSize offsets[] = {0};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
-    // Push identity transform matrix (rotation in Phase 8)
-    float identity[16] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f
-    };
-    vkCmdPushConstants(commandBuffer, ctx->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(identity), identity);
+    // Build rotation matrix from angle and push to shader
+    float transform[16];
+    buildRotationMatrixZ(angle, transform);
+    vkCmdPushConstants(commandBuffer, ctx->pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(transform), transform);
 
     // Draw triangle (3 vertices, 1 instance)
     vkCmdDraw(commandBuffer, 3, 1, 0, 0);
@@ -1343,9 +1353,9 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeRender(
 
     vkResetFences(ctx->device, 1, &ctx->inFlightFences[ctx->currentFrame]);
 
-    // Reset and record command buffer
+    // Reset and record command buffer with rotation angle
     vkResetCommandBuffer(ctx->commandBuffers[ctx->currentFrame], 0);
-    if (!recordCommandBuffer(ctx, ctx->commandBuffers[ctx->currentFrame], imageIndex)) {
+    if (!recordCommandBuffer(ctx, ctx->commandBuffers[ctx->currentFrame], imageIndex, angle)) {
         return;
     }
 
