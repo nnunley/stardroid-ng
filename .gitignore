@@ -1,0 +1,36 @@
+# Gradle
+.gradle/
+build/
+*.apk
+*.ap_
+*.zip
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Kotlin
+*.class
+*.jar
+*.war
+*.aar
+*.sar
+*.zip
+
+# CMake
+cmake-build-*/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local environment
+local.properties
+
+# Compilation cache
+.cxx/
