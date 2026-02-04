@@ -5,21 +5,30 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
+import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.ui.FpsOverlay
 import com.stardroid.awakening.vulkan.VulkanSurfaceView
 
 class MainActivity : AppCompatActivity() {
     private lateinit var vulkanSurfaceView: VulkanSurfaceView
     private lateinit var fpsOverlay: FpsOverlay
+    private lateinit var starCatalog: StarCatalog
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Load star catalog in background
+        starCatalog = StarCatalog(assets)
+        Thread {
+            starCatalog.load()
+        }.start()
 
         // Create container layout
         val container = FrameLayout(this)
 
         // Create Vulkan surface view
         vulkanSurfaceView = VulkanSurfaceView(this)
+        vulkanSurfaceView.starCatalog = starCatalog
         container.addView(vulkanSurfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT

@@ -3,6 +3,7 @@ package com.stardroid.awakening.vulkan
 import android.content.Context
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.renderer.DrawBatch
 import com.stardroid.awakening.renderer.Matrix
 import com.stardroid.awakening.renderer.PrimitiveType
@@ -23,6 +24,9 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
     private val renderLock = Any()
     private var surfaceWidth = 0
     private var surfaceHeight = 0
+
+    /** Star catalog for rendering. Set before surface is created. */
+    var starCatalog: StarCatalog? = null
 
     /** Callback for FPS updates. Called on render thread, use post() to update UI. */
     var onFpsUpdate: ((fps: Double) -> Unit)? = null
@@ -150,7 +154,18 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
                     // Begin frame
                     if (renderer.beginFrame()) {
-                        // Draw first triangle (rotating)
+                        // Draw stars from catalog if available
+                        starCatalog?.let { catalog ->
+                            val starBatch = catalog.getStarBatch()
+                            if (starBatch.vertexCount > 0) {
+                                // Rotate the celestial sphere slowly
+                                renderer.draw(starBatch.copy(
+                                    transform = Matrix.rotateZ(angle * 0.1f)
+                                ))
+                            }
+                        }
+
+                        // Draw demo triangles
                         val batch1 = DrawBatch(
                             type = PrimitiveType.TRIANGLES,
                             vertices = triangle1Vertices,
@@ -159,7 +174,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         )
                         renderer.draw(batch1)
 
-                        // Draw second triangle (static)
                         val batch2 = DrawBatch(
                             type = PrimitiveType.TRIANGLES,
                             vertices = triangle2Vertices,
@@ -168,7 +182,7 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         )
                         renderer.draw(batch2)
 
-                        // Draw points (stars)
+                        // Draw demo points
                         val pointBatch = DrawBatch(
                             type = PrimitiveType.POINTS,
                             vertices = pointVertices,
@@ -177,11 +191,11 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         )
                         renderer.draw(pointBatch)
 
-                        // Draw lines (constellation lines)
+                        // Draw demo lines
                         val lineBatch = DrawBatch(
                             type = PrimitiveType.LINES,
                             vertices = lineVertices,
-                            vertexCount = 4,  // 2 lines = 4 vertices
+                            vertexCount = 4,
                             transform = Matrix.identity()
                         )
                         renderer.draw(lineBatch)

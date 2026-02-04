@@ -16,3 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "StardroidAwakening"
 include(":app")
+include(":datamodel")
+include(":tools")

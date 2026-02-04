@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Phase:** Rendering Abstraction Phase 3 - Multiple Primitive Types Complete
+**Phase:** Star Data Loading - Complete (pending device verification)
 
 **Last Updated:** 2026-02-03
 
@@ -123,18 +123,32 @@
   - [x] Verified: `./gradlew assembleDebug` builds successfully (8.3MB APK)
   - [x] Ready for device testing
 
+- [x] **Star Data Loading**
+  - [x] Copy star data from stardroid (Protocol Buffers binary format)
+  - [x] Add datamodel module with protobuf schema (source.proto)
+  - [x] Create StarCatalog class to load stars.binary
+  - [x] Convert RA/Dec coordinates to xyz unit vectors on celestial sphere
+  - [x] Extract color from ARGB packed format
+  - [x] Integrate star rendering into VulkanSurfaceView
+  - [x] Verified: 9.0MB APK includes stars.binary (117KB), constellations.binary (18KB), messier.binary (8KB)
+  - [ ] **PENDING**: Verify on device (stars render as points)
+
 ## Next Tasks
 
-1. **Star Rendering and Data Layer**
-   - [ ] Define star data format (FlatBuffers)
-   - [ ] Load star catalog (bright stars, Messier objects)
-   - [ ] Render stars as points through abstraction API
-   - [ ] Render constellation lines and grids
+1. **Device Verification**
+   - [ ] Install APK on Android device
+   - [ ] Verify stars render as points on celestial sphere
+   - [ ] Verify demo primitives still render
+   - [ ] Check performance with full star catalog
 
 2. **Coordinate System and Transforms**
    - [ ] Implement celestial coordinate system (RA/Dec to screen)
    - [ ] Device orientation sensor integration
    - [ ] Real-time sky mapping
+
+3. **Constellation Lines**
+   - [ ] Load constellations.binary
+   - [ ] Render constellation lines
 
 ## Decisions Made
 
@@ -147,6 +161,8 @@
 - All matrices use column-major format (Vulkan/GLSL standard)
 - C++ math utilities extracted to `math_utils.h` for testability
 - Using gtest (Google Test) for C++ unit testing
+- Using Protocol Buffers (from stardroid) instead of FlatBuffers for star data (existing pipeline)
+- Star coordinates stored as RA/Dec, converted to xyz unit vectors at load time
 - Uniform buffer for view/projection (AR integration ready)
 - Push constants for model matrix (per-draw-call transforms)
 - 7-float vertex format: xyz position + rgba color (3D star positions)
