@@ -130,10 +130,12 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         val lineOfSight = pointing.lineOfSight
                         val up = pointing.perpendicular
 
-                        // Camera at origin, looking at pointing direction
+                        // Camera at origin, looking toward lineOfSight direction
+                        // lookAt expects a point to look at, so we use the unit vector
+                        // scaled to be in front of the camera
                         Matrix.lookAt(
                             0f, 0f, 0f,
-                            lineOfSight.x, lineOfSight.y, lineOfSight.z,
+                            -lineOfSight.x, -lineOfSight.y, -lineOfSight.z,
                             up.x, up.y, up.z
                         )
                     } ?: run {

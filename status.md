@@ -141,12 +141,22 @@
   - [x] Integrate into VulkanSurfaceView render loop
   - [x] ~781 line segments render with same celestial transform as stars
 
+- [x] **Device Orientation Sensor Integration**
+  - [x] Add math utilities: Vector3, Matrix3x3, LatLong, TimeUtils, Coordinates
+  - [x] Implement AstronomerModel for phone-to-celestial coordinate transform
+  - [x] Implement SensorOrientationController for sensor event handling
+  - [x] Support rotation vector sensor with accelerometer+magnetometer fallback
+  - [x] Add Matrix.lookAt() for view matrix construction
+  - [x] Integrate sensor-based view matrix into VulkanSurfaceView
+  - [x] Add location permission and updates for Local Sidereal Time calculation
+  - [x] Add magnetic declination correction using GeomagneticField API
+
 ## Next Tasks
 
-1. **Coordinate System and Transforms**
-   - [ ] Implement celestial coordinate system (RA/Dec to screen)
-   - [ ] Device orientation sensor integration
-   - [ ] Real-time sky mapping
+1. **Device Testing & Tuning**
+   - [ ] Test sensor tracking on device
+   - [ ] Tune damping parameters for smooth motion
+   - [ ] Verify celestial alignment accuracy
 
 ## Decisions Made
 

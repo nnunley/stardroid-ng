@@ -173,21 +173,27 @@ class AstronomerModel {
         if (useRotationVector) {
             val rotationMatrix = FloatArray(9)
             SensorManager.getRotationMatrixFromVector(rotationMatrix, rotationVector)
-            // Row 2 is up, Row 1 is north, Row 0 is east (in phone coords)
+            // SensorManager rotation matrix rows:
+            // Row 0 = East (X world axis in device coords)
+            // Row 1 = North (Y world axis in device coords)
+            // Row 2 = Up (Z world axis in device coords)
+            magneticEastPhone = Vector3(rotationMatrix[0], rotationMatrix[1], rotationMatrix[2])
             magneticNorthPhone = Vector3(rotationMatrix[3], rotationMatrix[4], rotationMatrix[5])
             upPhone = Vector3(rotationMatrix[6], rotationMatrix[7], rotationMatrix[8])
-            magneticEastPhone = Vector3(rotationMatrix[0], rotationMatrix[1], rotationMatrix[2])
         } else {
             // Use accelerometer and magnetometer
+            // Accelerometer measures reaction to gravity, so points UP when device is flat
             upPhone = acceleration.normalizedCopy()
             val magNorm = magneticField.normalizedCopy()
-            // Project magnetic field to horizontal plane
+            // Project magnetic field to horizontal plane (vector rejection)
             magneticNorthPhone = magNorm - upPhone * (magNorm dot upPhone)
             magneticNorthPhone.normalize()
+            // East = North × Up (right-handed)
             magneticEastPhone = magneticNorthPhone cross upPhone
         }
 
         // Build inverse matrix (transpose since orthonormal)
+        // Passing false means these are row vectors, which transposes to give us inverse
         axesPhoneInverse = Matrix3x3(magneticNorthPhone, upPhone, magneticEastPhone, false)
     }
 

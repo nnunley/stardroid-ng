@@ -18,12 +18,14 @@ import com.stardroid.awakening.control.SensorOrientationController
 import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.math.LatLong
+import com.stardroid.awakening.ui.CompassOverlay
 import com.stardroid.awakening.ui.FpsOverlay
 import com.stardroid.awakening.vulkan.VulkanSurfaceView
 
 class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var vulkanSurfaceView: VulkanSurfaceView
     private lateinit var fpsOverlay: FpsOverlay
+    private lateinit var compassOverlay: CompassOverlay
     private lateinit var starCatalog: StarCatalog
     private lateinit var constellationCatalog: ConstellationCatalog
     private lateinit var astronomerModel: AstronomerModel
@@ -68,9 +70,21 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
         container.addView(fpsOverlay, fpsParams)
 
-        // Connect FPS updates
+        // Create compass overlay in bottom-right corner
+        compassOverlay = CompassOverlay(this)
+        compassOverlay.astronomerModel = astronomerModel
+        val compassSize = (100 * resources.displayMetrics.density).toInt()
+        val compassParams = FrameLayout.LayoutParams(compassSize, compassSize).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            setMargins(0, 0, 16, 48)
+        }
+        container.addView(compassOverlay, compassParams)
+
+        // Connect FPS updates and compass updates
         vulkanSurfaceView.onFpsUpdate = { fps ->
             fpsOverlay.updateFps(fps)
+            // Update compass on UI thread
+            compassOverlay.post { compassOverlay.update() }
         }
 
         setContentView(container)
