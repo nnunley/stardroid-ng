@@ -113,25 +113,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                     0.5f,  0.1f, 0f,  1f, 0f, 1f, 1f,  // magenta
                 )
 
-                // Demo points (stars)
-                val pointVertices = floatArrayOf(
-                    // x, y, z, r, g, b, a
-                    -0.7f, -0.7f, 0f,  1f, 1f, 1f, 1f,  // white
-                    -0.6f, -0.5f, 0f,  1f, 1f, 0.8f, 1f,  // yellow-ish
-                    -0.8f, -0.3f, 0f,  0.8f, 0.8f, 1f, 1f,  // blue-ish
-                    -0.5f, -0.6f, 0f,  1f, 0.9f, 0.9f, 1f,  // white-ish
-                )
-
-                // Demo lines (constellation-like)
-                val lineVertices = floatArrayOf(
-                    // x, y, z, r, g, b, a
-                    // Line 1: connects two stars
-                    -0.7f, -0.7f, 0f,  0.5f, 0.5f, 1f, 1f,  // start
-                    -0.6f, -0.5f, 0f,  0.5f, 0.5f, 1f, 1f,  // end
-                    // Line 2: another constellation line
-                    -0.6f, -0.5f, 0f,  0.5f, 0.5f, 1f, 1f,  // start
-                    -0.8f, -0.3f, 0f,  0.5f, 0.5f, 1f, 1f,  // end
-                )
 
                 while (rendering) {
                     val frameStart = System.currentTimeMillis()
@@ -182,23 +163,7 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         )
                         renderer.draw(batch2)
 
-                        // Draw demo points
-                        val pointBatch = DrawBatch(
-                            type = PrimitiveType.POINTS,
-                            vertices = pointVertices,
-                            vertexCount = 4,
-                            transform = Matrix.identity()
-                        )
-                        renderer.draw(pointBatch)
-
-                        // Draw demo lines
-                        val lineBatch = DrawBatch(
-                            type = PrimitiveType.LINES,
-                            vertices = lineVertices,
-                            vertexCount = 4,
-                            transform = Matrix.identity()
-                        )
-                        renderer.draw(lineBatch)
+                        // Demo points and lines removed - stars cover this functionality
 
                         // End frame
                         renderer.endFrame()

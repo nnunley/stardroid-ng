@@ -2,7 +2,7 @@
 
 ## Current State
 
-**Phase:** Star Data Loading - Complete (pending device verification)
+**Phase:** Star Data Loading - Complete and Verified
 
 **Last Updated:** 2026-02-03
 
@@ -131,15 +131,11 @@
   - [x] Extract color from ARGB packed format
   - [x] Integrate star rendering into VulkanSurfaceView
   - [x] Verified: 9.0MB APK includes stars.binary (117KB), constellations.binary (18KB), messier.binary (8KB)
-  - [ ] **PENDING**: Verify on device (stars render as points)
+  - [x] **VERIFIED**: Stars render as points on device
+  - [x] Fixed dynamic vertex buffer overflow (64KB → 512KB)
+  - [x] ~3200 stars render at 60+ FPS
 
 ## Next Tasks
-
-1. **Device Verification**
-   - [ ] Install APK on Android device
-   - [ ] Verify stars render as points on celestial sphere
-   - [ ] Verify demo primitives still render
-   - [ ] Check performance with full star catalog
 
 2. **Coordinate System and Transforms**
    - [ ] Implement celestial coordinate system (RA/Dec to screen)

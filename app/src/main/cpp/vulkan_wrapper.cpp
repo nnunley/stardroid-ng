@@ -946,9 +946,9 @@ static bool createDescriptorPool(VulkanContext* ctx) {
     return true;
 }
 
-// Create dynamic vertex buffer (64KB initial size)
+// Create dynamic vertex buffer (512KB for star catalog)
 static bool createDynamicVertexBuffer(VulkanContext* ctx) {
-    ctx->dynamicVertexBufferSize = 65536; // 64KB
+    ctx->dynamicVertexBufferSize = 512 * 1024; // 512KB (enough for ~18k stars)
 
     VkBufferCreateInfo bufferInfo{};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
