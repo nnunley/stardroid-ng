@@ -5,6 +5,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
+import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.ui.FpsOverlay
 import com.stardroid.awakening.vulkan.VulkanSurfaceView
@@ -13,14 +14,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var vulkanSurfaceView: VulkanSurfaceView
     private lateinit var fpsOverlay: FpsOverlay
     private lateinit var starCatalog: StarCatalog
+    private lateinit var constellationCatalog: ConstellationCatalog
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Load star catalog in background
+        // Load catalogs in background
         starCatalog = StarCatalog(assets)
+        constellationCatalog = ConstellationCatalog(assets)
         Thread {
             starCatalog.load()
+            constellationCatalog.load()
         }.start()
 
         // Create container layout
@@ -29,6 +33,7 @@ class MainActivity : AppCompatActivity() {
         // Create Vulkan surface view
         vulkanSurfaceView = VulkanSurfaceView(this)
         vulkanSurfaceView.starCatalog = starCatalog
+        vulkanSurfaceView.constellationCatalog = constellationCatalog
         container.addView(vulkanSurfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT

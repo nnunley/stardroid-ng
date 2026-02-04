@@ -3,6 +3,7 @@ package com.stardroid.awakening.vulkan
 import android.content.Context
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.renderer.DrawBatch
 import com.stardroid.awakening.renderer.Matrix
@@ -27,6 +28,9 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
     /** Star catalog for rendering. Set before surface is created. */
     var starCatalog: StarCatalog? = null
+
+    /** Constellation catalog for rendering. Set before surface is created. */
+    var constellationCatalog: ConstellationCatalog? = null
 
     /** Callback for FPS updates. Called on render thread, use post() to update UI. */
     var onFpsUpdate: ((fps: Double) -> Unit)? = null
@@ -135,13 +139,24 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
                     // Begin frame
                     if (renderer.beginFrame()) {
-                        // Draw stars from catalog if available
+                        val celestialTransform = Matrix.rotateZ(angle * 0.1f)
+
+                        // Draw constellation lines first (behind stars)
+                        constellationCatalog?.let { catalog ->
+                            val constellationBatch = catalog.getConstellationBatch()
+                            if (constellationBatch.vertexCount > 0) {
+                                renderer.draw(constellationBatch.copy(
+                                    transform = celestialTransform
+                                ))
+                            }
+                        }
+
+                        // Draw stars from catalog
                         starCatalog?.let { catalog ->
                             val starBatch = catalog.getStarBatch()
                             if (starBatch.vertexCount > 0) {
-                                // Rotate the celestial sphere slowly
                                 renderer.draw(starBatch.copy(
-                                    transform = Matrix.rotateZ(angle * 0.1f)
+                                    transform = celestialTransform
                                 ))
                             }
                         }
@@ -162,8 +177,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                             transform = Matrix.identity()
                         )
                         renderer.draw(batch2)
-
-                        // Demo points and lines removed - stars cover this functionality
 
                         // End frame
                         renderer.endFrame()

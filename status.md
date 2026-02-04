@@ -135,16 +135,18 @@
   - [x] Fixed dynamic vertex buffer overflow (64KB → 512KB)
   - [x] ~3200 stars render at 60+ FPS
 
+- [x] **Constellation Lines**
+  - [x] Create ConstellationCatalog to load constellations.binary
+  - [x] Convert line strips to line segments for LINES primitive
+  - [x] Integrate into VulkanSurfaceView render loop
+  - [x] ~781 line segments render with same celestial transform as stars
+
 ## Next Tasks
 
-2. **Coordinate System and Transforms**
+1. **Coordinate System and Transforms**
    - [ ] Implement celestial coordinate system (RA/Dec to screen)
    - [ ] Device orientation sensor integration
    - [ ] Real-time sky mapping
-
-3. **Constellation Lines**
-   - [ ] Load constellations.binary
-   - [ ] Render constellation lines
 
 ## Decisions Made
 
