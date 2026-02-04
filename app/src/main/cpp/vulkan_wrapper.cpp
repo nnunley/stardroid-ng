@@ -139,6 +139,9 @@ struct VulkanContext {
     float viewMatrix[16];
     float projectionMatrix[16];
 
+    // Background opacity (0.0 = transparent, 1.0 = opaque dark)
+    float backgroundOpacity = 0.0f;
+
     // Frame state
     bool inFrame = false;
     uint32_t currentImageIndex = 0;
@@ -1091,7 +1094,7 @@ static UniquePipeline createPipelineForTopology(VulkanContext* ctx, VkPrimitiveT
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterizer.lineWidth = 1.0f;
+    rasterizer.lineWidth = 2.0f;  // Thicker lines for constellation visibility
     // Disable culling for points and lines (they have no front/back face)
     if (topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST || topology == VK_PRIMITIVE_TOPOLOGY_LINE_LIST) {
         rasterizer.cullMode = VK_CULL_MODE_NONE;
@@ -1341,8 +1344,8 @@ static bool recordCommandBuffer(VulkanContext* ctx, VkCommandBuffer commandBuffe
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = ctx->swapchainExtent;
 
-    // Clear to a nice dark blue color
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.2f, 1.0f}}};
+    // Clear with configurable opacity (0 = transparent for AR, 1 = dark background)
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.05f * ctx->backgroundOpacity, ctx->backgroundOpacity}}};
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearColor;
 
@@ -1643,6 +1646,19 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeSetProjectionMatrix(
     env->ReleaseFloatArrayElements(matrixArray, matrix, JNI_ABORT);
 }
 
+// Set background opacity (0.0 = transparent, 1.0 = opaque dark)
+JNIEXPORT void JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeSetBackgroundOpacity(
+    JNIEnv* env, jobject obj, jlong contextHandle, jfloat opacity) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    if (ctx == nullptr) {
+        return;
+    }
+
+    ctx->backgroundOpacity = opacity;
+}
+
 // New Phase 2 API: Begin frame
 JNIEXPORT jboolean JNICALL
 Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeBeginFrame(
@@ -1693,7 +1709,8 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeBeginFrame(
     renderPassInfo.renderArea.offset = {0, 0};
     renderPassInfo.renderArea.extent = ctx->swapchainExtent;
 
-    VkClearValue clearColor = {{{0.0f, 0.0f, 0.2f, 1.0f}}};
+    // Clear with configurable opacity (0 = transparent for AR, 1 = dark background)
+    VkClearValue clearColor = {{{0.0f, 0.0f, 0.05f * ctx->backgroundOpacity, ctx->backgroundOpacity}}};
     renderPassInfo.clearValueCount = 1;
     renderPassInfo.pClearValues = &clearColor;
 

@@ -92,6 +92,15 @@ class VulkanRenderer : RendererInterface {
         matricesDirty = true
     }
 
+    /**
+     * Set background opacity (0.0 = fully transparent, 1.0 = fully opaque dark).
+     */
+    fun setBackgroundOpacity(opacity: Float) {
+        if (nativeContext != 0L) {
+            nativeSetBackgroundOpacity(nativeContext, opacity.coerceIn(0f, 1f))
+        }
+    }
+
     override val isInitialized: Boolean
         get() = nativeContext != 0L
 
@@ -147,6 +156,7 @@ class VulkanRenderer : RendererInterface {
     )
     private external fun nativeSetViewMatrix(context: Long, matrix: FloatArray)
     private external fun nativeSetProjectionMatrix(context: Long, matrix: FloatArray)
+    private external fun nativeSetBackgroundOpacity(context: Long, opacity: Float)
 
     companion object {
         private var libraryLoaded = false

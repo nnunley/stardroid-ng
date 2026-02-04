@@ -18,15 +18,22 @@ import com.stardroid.awakening.control.SensorOrientationController
 import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.math.LatLong
+import com.stardroid.awakening.ar.CameraSurfaceView
+import com.stardroid.awakening.layers.Layer
+import com.stardroid.awakening.layers.LayerManager
 import com.stardroid.awakening.ui.CompassOverlay
 import com.stardroid.awakening.ui.FpsOverlay
+import com.stardroid.awakening.ui.LayerToggleOverlay
 import com.stardroid.awakening.vulkan.VulkanSurfaceView
 
 class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var vulkanSurfaceView: VulkanSurfaceView
     private lateinit var fpsOverlay: FpsOverlay
     private lateinit var compassOverlay: CompassOverlay
+    private lateinit var layerToggleOverlay: LayerToggleOverlay
+    private lateinit var layerManager: LayerManager
     private lateinit var starCatalog: StarCatalog
+    private var cameraPreviewView: CameraSurfaceView? = null
     private lateinit var constellationCatalog: ConstellationCatalog
     private lateinit var astronomerModel: AstronomerModel
     private var sensorController: SensorOrientationController? = null
@@ -35,8 +42,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize astronomer model
+        // Initialize astronomer model and layer manager
         astronomerModel = AstronomerModel()
+        layerManager = LayerManager()
 
         // Load catalogs in background
         starCatalog = StarCatalog(assets)
@@ -54,31 +62,52 @@ class MainActivity : AppCompatActivity(), LocationListener {
         vulkanSurfaceView.starCatalog = starCatalog
         vulkanSurfaceView.constellationCatalog = constellationCatalog
         vulkanSurfaceView.astronomerModel = astronomerModel
+        vulkanSurfaceView.layerManager = layerManager
         container.addView(vulkanSurfaceView, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
 
-        // Create FPS overlay in bottom-left corner
+        // Create compass overlay in bottom-left corner
+        compassOverlay = CompassOverlay(this)
+        compassOverlay.astronomerModel = astronomerModel
+        val compassSize = (100 * resources.displayMetrics.density).toInt()
+        val compassParams = FrameLayout.LayoutParams(compassSize, compassSize).apply {
+            gravity = Gravity.BOTTOM or Gravity.START
+            setMargins(16, 0, 0, 48)
+        }
+        container.addView(compassOverlay, compassParams)
+
+        // Create FPS overlay in bottom-left corner (above compass)
         fpsOverlay = FpsOverlay(this)
         val fpsParams = FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
             FrameLayout.LayoutParams.WRAP_CONTENT
         ).apply {
             gravity = Gravity.BOTTOM or Gravity.START
-            setMargins(16, 0, 0, 48)
+            setMargins(16, 0, 0, compassSize + 56)
         }
         container.addView(fpsOverlay, fpsParams)
 
-        // Create compass overlay in bottom-right corner
-        compassOverlay = CompassOverlay(this)
-        compassOverlay.astronomerModel = astronomerModel
-        val compassSize = (100 * resources.displayMetrics.density).toInt()
-        val compassParams = FrameLayout.LayoutParams(compassSize, compassSize).apply {
+        // Create layer toggle FAB in bottom-right corner
+        layerToggleOverlay = LayerToggleOverlay(this)
+        layerToggleOverlay.setup(
+            manager = layerManager,
+            onChange = {
+                // Layer changed callback - handle AR camera toggle
+                updateArCameraVisibility(container)
+            },
+            onOpacity = { opacity ->
+                // Update Vulkan background opacity
+                vulkanSurfaceView.backgroundOpacity = opacity
+            }
+        )
+        val fabSize = (48 * resources.displayMetrics.density).toInt()
+        val layerParams = FrameLayout.LayoutParams(fabSize, fabSize).apply {
             gravity = Gravity.BOTTOM or Gravity.END
             setMargins(0, 0, 16, 48)
         }
-        container.addView(compassOverlay, compassParams)
+        container.addView(layerToggleOverlay, layerParams)
 
         // Connect FPS updates and compass updates
         vulkanSurfaceView.onFpsUpdate = { fps ->
@@ -168,10 +197,19 @@ class MainActivity : AppCompatActivity(), LocationListener {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == LOCATION_PERMISSION_REQUEST &&
-            grantResults.isNotEmpty() &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            startLocationUpdates()
+        when (requestCode) {
+            LOCATION_PERMISSION_REQUEST -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    startLocationUpdates()
+                }
+            }
+            CAMERA_PERMISSION_REQUEST -> {
+                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                    // Re-trigger AR camera if layer is enabled
+                    val container = vulkanSurfaceView.parent as? FrameLayout
+                    container?.let { updateArCameraVisibility(it) }
+                }
+            }
         }
     }
 
@@ -182,7 +220,53 @@ class MainActivity : AppCompatActivity(), LocationListener {
         )
     }
 
+    private fun updateArCameraVisibility(container: FrameLayout) {
+        val shouldShowCamera = layerManager.isVisible(Layer.AR_CAMERA)
+        android.util.Log.d("MainActivity", "updateArCameraVisibility: shouldShow=$shouldShowCamera, cameraView=${cameraPreviewView != null}")
+
+        if (shouldShowCamera && cameraPreviewView == null) {
+            // Check camera permission
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+                android.util.Log.d("MainActivity", "Requesting camera permission")
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.CAMERA),
+                    CAMERA_PERMISSION_REQUEST
+                )
+                return
+            }
+
+            android.util.Log.d("MainActivity", "Creating camera preview")
+
+            // Create camera SurfaceView - it will be behind Vulkan surface
+            cameraPreviewView = CameraSurfaceView(this)
+            container.addView(cameraPreviewView, 0, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+
+            // Make Vulkan view transparent and put it on top using media overlay
+            // This allows the camera SurfaceView to show through
+            vulkanSurfaceView.setZOrderMediaOverlay(true)
+            vulkanSurfaceView.holder.setFormat(android.graphics.PixelFormat.TRANSLUCENT)
+
+            android.util.Log.d("MainActivity", "Camera SurfaceView added, Vulkan set as media overlay")
+        } else if (!shouldShowCamera && cameraPreviewView != null) {
+            android.util.Log.d("MainActivity", "Removing camera preview")
+            // Remove camera preview
+            cameraPreviewView?.stopPreview()
+            container.removeView(cameraPreviewView)
+            cameraPreviewView = null
+
+            // Restore opaque Vulkan view
+            vulkanSurfaceView.setZOrderMediaOverlay(false)
+            vulkanSurfaceView.holder.setFormat(android.graphics.PixelFormat.OPAQUE)
+        }
+    }
+
     companion object {
         private const val LOCATION_PERMISSION_REQUEST = 1001
+        private const val CAMERA_PERMISSION_REQUEST = 1002
     }
 }

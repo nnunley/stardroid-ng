@@ -6,6 +6,10 @@ import android.view.SurfaceView
 import com.stardroid.awakening.control.AstronomerModel
 import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
+import com.stardroid.awakening.layers.GridLayer
+import com.stardroid.awakening.layers.HorizonLayer
+import com.stardroid.awakening.layers.Layer
+import com.stardroid.awakening.layers.LayerManager
 import com.stardroid.awakening.renderer.Matrix
 
 /**
@@ -34,13 +38,32 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
     /** Astronomer model for sensor-based orientation. Set before surface is created. */
     var astronomerModel: AstronomerModel? = null
 
+    /** Layer manager for visibility control. Set before surface is created. */
+    var layerManager: LayerManager? = null
+
+    /** Grid layer for RA/Dec coordinate lines. */
+    private val gridLayer = GridLayer()
+
+    /** Horizon layer for horizon line and cardinal markers. */
+    private val horizonLayer = HorizonLayer()
+
     /** Callback for FPS updates. Called on render thread, use post() to update UI. */
     var onFpsUpdate: ((fps: Double) -> Unit)? = null
+
+    /** Background opacity (0.0 = transparent for AR, 1.0 = opaque dark sky). */
+    var backgroundOpacity: Float = 0.0f
+        set(value) {
+            field = value.coerceIn(0f, 1f)
+            renderer.setBackgroundOpacity(field)
+        }
 
     init {
         holder.addCallback(this)
         // Set to opaque to avoid blending with background
         holder.setFormat(android.graphics.PixelFormat.OPAQUE)
+        // Ensure SurfaceView doesn't cover UI overlays
+        setZOrderOnTop(false)
+        setZOrderMediaOverlay(false)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -151,19 +174,54 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
                     // Begin frame
                     if (renderer.beginFrame()) {
-                        // Draw constellation lines first (behind stars)
-                        constellationCatalog?.let { catalog ->
-                            val constellationBatch = catalog.getConstellationBatch()
-                            if (constellationBatch.vertexCount > 0) {
-                                renderer.draw(constellationBatch)
+                        val layers = layerManager
+
+                        // Draw grid lines first (background layer)
+                        if (layers?.isVisible(Layer.GRID) == true) {
+                            val gridBatch = gridLayer.getGridBatch()
+                            if (gridBatch.vertexCount > 0) {
+                                renderer.draw(gridBatch)
                             }
                         }
 
-                        // Draw stars from catalog
-                        starCatalog?.let { catalog ->
-                            val starBatch = catalog.getStarBatch()
-                            if (starBatch.vertexCount > 0) {
-                                renderer.draw(starBatch)
+                        // Draw horizon line
+                        if (layers?.isVisible(Layer.HORIZON) == true) {
+                            val horizonBatch = horizonLayer.getHorizonBatch(astronomerModel)
+                            if (horizonBatch.vertexCount > 0) {
+                                renderer.draw(horizonBatch)
+                            }
+                        }
+
+                        // Draw constellation lines (behind stars)
+                        if (layers?.isVisible(Layer.CONSTELLATIONS) != false) {
+                            constellationCatalog?.let { catalog ->
+                                val constellationBatch = catalog.getConstellationBatch()
+                                if (constellationBatch.vertexCount > 0) {
+                                    renderer.draw(constellationBatch)
+                                }
+                            }
+                        }
+
+                        // Draw stars from catalog with frustum culling
+                        if (layers?.isVisible(Layer.STARS) != false) {
+                            starCatalog?.let { catalog ->
+                                // Get look direction for frustum culling
+                                val lookDir = astronomerModel?.getPointing()?.lineOfSight
+                                val currentFov = fov
+
+                                val starBatch = if (lookDir != null) {
+                                    // Use frustum culling
+                                    catalog.getVisibleStarBatch(
+                                        -lookDir.x, -lookDir.y, -lookDir.z,  // Negate because we look toward negative direction
+                                        currentFov * 1.5f  // Add margin for safety
+                                    )
+                                } else {
+                                    // Fall back to all stars
+                                    catalog.getStarBatch()
+                                }
+                                if (starBatch.vertexCount > 0) {
+                                    renderer.draw(starBatch)
+                                }
                             }
                         }
 

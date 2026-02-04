@@ -6,6 +6,7 @@ import com.google.android.stardroid.source.proto.SourceProto
 import com.stardroid.awakening.renderer.DrawBatch
 import com.stardroid.awakening.renderer.Matrix
 import com.stardroid.awakening.renderer.PrimitiveType
+import com.stardroid.awakening.spatial.SpatialStarIndex
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -14,11 +15,14 @@ import kotlin.math.sin
  *
  * Stars are stored with RA/Dec coordinates and converted to 3D xyz
  * positions on the celestial sphere (unit vectors).
+ *
+ * Uses HEALPix spatial indexing for efficient frustum culling.
  */
 class StarCatalog(private val assetManager: AssetManager) {
 
     private var stars: List<Star> = emptyList()
     private var isLoaded = false
+    private val spatialIndex = SpatialStarIndex()
 
     data class Star(
         val x: Float,
@@ -28,6 +32,8 @@ class StarCatalog(private val assetManager: AssetManager) {
         val g: Float,
         val b: Float,
         val a: Float,
+        val raDeg: Double,
+        val decDeg: Double,
         val size: Int,
         val name: String?
     )
@@ -56,9 +62,13 @@ class StarCatalog(private val assetManager: AssetManager) {
                         val point = source.getPoint(j)
                         val location = point.location
 
+                        // Store RA/Dec for spatial indexing
+                        val raDeg = location.rightAscension.toDouble()
+                        val decDeg = location.declination.toDouble()
+
                         // Convert RA/Dec to xyz unit vector
-                        val raRad = Math.toRadians(location.rightAscension.toDouble())
-                        val decRad = Math.toRadians(location.declination.toDouble())
+                        val raRad = Math.toRadians(raDeg)
+                        val decRad = Math.toRadians(decDeg)
 
                         val x = (cos(decRad) * cos(raRad)).toFloat()
                         val y = (cos(decRad) * sin(raRad)).toFloat()
@@ -76,12 +86,15 @@ class StarCatalog(private val assetManager: AssetManager) {
                             source.getNameStrIds(0)
                         } else null
 
-                        loadedStars.add(Star(x, y, z, r, g, b, a, point.size, name))
+                        loadedStars.add(Star(x, y, z, r, g, b, a, raDeg, decDeg, point.size, name))
                     }
                 }
 
                 stars = loadedStars
                 isLoaded = true
+
+                // Build spatial index for frustum culling
+                buildSpatialIndex()
 
                 val elapsed = System.currentTimeMillis() - startTime
                 Log.d(TAG, "Loaded ${stars.size} stars in ${elapsed}ms")
@@ -92,7 +105,33 @@ class StarCatalog(private val assetManager: AssetManager) {
     }
 
     /**
-     * Get all stars as a DrawBatch for rendering.
+     * Build the HEALPix spatial index for efficient frustum culling.
+     */
+    private fun buildSpatialIndex() {
+        val indexStars = stars.map { star ->
+            SpatialStarIndex.Star(
+                x = star.x,
+                y = star.y,
+                z = star.z,
+                r = star.r,
+                g = star.g,
+                b = star.b,
+                a = star.a,
+                raDeg = star.raDeg,
+                decDeg = star.decDeg,
+                name = star.name
+            )
+        }
+        spatialIndex.buildIndex(indexStars)
+
+        // Log stats
+        val stats = spatialIndex.getStats()
+        Log.d(TAG, "Spatial index: nside=${stats.nside}, ${stats.occupiedPixels}/${stats.totalPixels} pixels, " +
+                "~${String.format("%.1f", stats.avgStarsPerPixel)} stars/pixel, resolution=${String.format("%.2f", stats.resolutionDeg)}°")
+    }
+
+    /**
+     * Get all stars as a DrawBatch for rendering (no culling).
      * Stars are rendered as points on the celestial sphere.
      */
     fun getStarBatch(): DrawBatch {
@@ -106,26 +145,29 @@ class StarCatalog(private val assetManager: AssetManager) {
             )
         }
 
-        // Build vertex array: xyz + rgba = 7 floats per star
-        val vertices = FloatArray(stars.size * 7)
-        var offset = 0
+        return spatialIndex.getAllStarsBatch()
+    }
 
-        for (star in stars) {
-            vertices[offset++] = star.x
-            vertices[offset++] = star.y
-            vertices[offset++] = star.z
-            vertices[offset++] = star.r
-            vertices[offset++] = star.g
-            vertices[offset++] = star.b
-            vertices[offset++] = star.a
+    /**
+     * Get visible stars as a DrawBatch with frustum culling.
+     *
+     * @param lookX View direction X component (unit vector)
+     * @param lookY View direction Y component
+     * @param lookZ View direction Z component
+     * @param fovDeg Field of view in degrees
+     */
+    fun getVisibleStarBatch(lookX: Float, lookY: Float, lookZ: Float, fovDeg: Float): DrawBatch {
+        if (!isLoaded) {
+            Log.w(TAG, "Star catalog not loaded, returning empty batch")
+            return DrawBatch(
+                type = PrimitiveType.POINTS,
+                vertices = floatArrayOf(),
+                vertexCount = 0,
+                transform = Matrix.identity()
+            )
         }
 
-        return DrawBatch(
-            type = PrimitiveType.POINTS,
-            vertices = vertices,
-            vertexCount = stars.size,
-            transform = Matrix.identity()
-        )
+        return spatialIndex.getVisibleStarBatch(lookX, lookY, lookZ, fovDeg)
     }
 
     /**
@@ -133,6 +175,13 @@ class StarCatalog(private val assetManager: AssetManager) {
      */
     val starCount: Int
         get() = stars.size
+
+    /**
+     * Get spatial index statistics.
+     */
+    fun getIndexStats(): SpatialStarIndex.IndexStats? {
+        return if (isLoaded) spatialIndex.getStats() else null
+    }
 
     companion object {
         private const val TAG = "StarCatalog"
