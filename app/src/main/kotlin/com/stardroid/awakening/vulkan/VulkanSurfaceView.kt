@@ -3,6 +3,7 @@ package com.stardroid.awakening.vulkan
 import android.content.Context
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import com.stardroid.awakening.control.AstronomerModel
 import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.renderer.Matrix
@@ -29,6 +30,9 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
     /** Constellation catalog for rendering. Set before surface is created. */
     var constellationCatalog: ConstellationCatalog? = null
+
+    /** Astronomer model for sensor-based orientation. Set before surface is created. */
+    var astronomerModel: AstronomerModel? = null
 
     /** Callback for FPS updates. Called on render thread, use post() to update UI. */
     var onFpsUpdate: ((fps: Double) -> Unit)? = null
@@ -89,7 +93,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
         renderThread = Thread {
             try {
-                var angle = 0f
                 val targetFps = 60
                 val frameTimeMs = 1000L / targetFps
 
@@ -98,6 +101,9 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                 var fpsStartTime = System.nanoTime()
                 val fpsUpdateIntervalNs = 500_000_000L // Update FPS every 0.5 seconds
                 var currentFps = 0.0
+
+                // Fallback rotation when no sensor data
+                var fallbackAngle = 0f
 
                 while (rendering) {
                     val frameStart = System.currentTimeMillis()
@@ -108,27 +114,46 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                     } else {
                         1f
                     }
+
+                    val fov = astronomerModel?.fieldOfView ?: 60f
                     val projection = Matrix.perspective(
-                        fovYDegrees = 60f,
+                        fovYDegrees = fov,
                         aspect = aspect,
                         near = 0.1f,
                         far = 100f
                     )
                     renderer.setProjectionMatrix(projection)
-                    // Move camera back (translate world by -2 in Z)
-                    renderer.setViewMatrix(Matrix.translate(0f, 0f, -2f))
+
+                    // Build view matrix from astronomer model or use fallback
+                    val viewMatrix = astronomerModel?.let { model ->
+                        val pointing = model.getPointing()
+                        val lineOfSight = pointing.lineOfSight
+                        val up = pointing.perpendicular
+
+                        // Camera at origin, looking at pointing direction
+                        Matrix.lookAt(
+                            0f, 0f, 0f,
+                            lineOfSight.x, lineOfSight.y, lineOfSight.z,
+                            up.x, up.y, up.z
+                        )
+                    } ?: run {
+                        // Fallback: slowly rotate through sky
+                        fallbackAngle += 0.1f
+                        if (fallbackAngle >= 360f) fallbackAngle = 0f
+                        Matrix.multiply(
+                            Matrix.translate(0f, 0f, -2f),
+                            Matrix.rotateY(fallbackAngle)
+                        )
+                    }
+                    renderer.setViewMatrix(viewMatrix)
 
                     // Begin frame
                     if (renderer.beginFrame()) {
-                        val celestialTransform = Matrix.rotateZ(angle * 0.1f)
-
                         // Draw constellation lines first (behind stars)
                         constellationCatalog?.let { catalog ->
                             val constellationBatch = catalog.getConstellationBatch()
                             if (constellationBatch.vertexCount > 0) {
-                                renderer.draw(constellationBatch.copy(
-                                    transform = celestialTransform
-                                ))
+                                renderer.draw(constellationBatch)
                             }
                         }
 
@@ -136,9 +161,7 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         starCatalog?.let { catalog ->
                             val starBatch = catalog.getStarBatch()
                             if (starBatch.vertexCount > 0) {
-                                renderer.draw(starBatch.copy(
-                                    transform = celestialTransform
-                                ))
+                                renderer.draw(starBatch)
                             }
                         }
 
@@ -148,12 +171,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
                     frameCount++
 
-                    // Increment angle for animation
-                    angle += 1f
-                    if (angle >= 360f) {
-                        angle = 0f
-                    }
-
                     // Calculate FPS
                     val now = System.nanoTime()
                     val elapsed = now - fpsStartTime
@@ -161,9 +178,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         currentFps = frameCount * 1_000_000_000.0 / elapsed
                         frameCount = 0
                         fpsStartTime = now
-
-                        // Log FPS periodically
-                        android.util.Log.i(TAG, "FPS: %.1f".format(currentFps))
 
                         // Notify callback
                         onFpsUpdate?.invoke(currentFps)

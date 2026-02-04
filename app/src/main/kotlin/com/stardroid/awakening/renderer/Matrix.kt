@@ -72,4 +72,77 @@ object Matrix {
         }
         return result
     }
+
+    /** Create rotation matrix around X axis */
+    fun rotateX(angleDegrees: Float): FloatArray {
+        val angleRadians = angleDegrees * (Math.PI.toFloat() / 180f)
+        val c = cos(angleRadians)
+        val s = sin(angleRadians)
+
+        return floatArrayOf(
+            1f, 0f, 0f, 0f,
+            0f, c, s, 0f,
+            0f, -s, c, 0f,
+            0f, 0f, 0f, 1f
+        )
+    }
+
+    /** Create rotation matrix around Y axis */
+    fun rotateY(angleDegrees: Float): FloatArray {
+        val angleRadians = angleDegrees * (Math.PI.toFloat() / 180f)
+        val c = cos(angleRadians)
+        val s = sin(angleRadians)
+
+        return floatArrayOf(
+            c, 0f, -s, 0f,
+            0f, 1f, 0f, 0f,
+            s, 0f, c, 0f,
+            0f, 0f, 0f, 1f
+        )
+    }
+
+    /**
+     * Create a look-at view matrix.
+     * @param eyeX, eyeY, eyeZ Camera position
+     * @param centerX, centerY, centerZ Point to look at
+     * @param upX, upY, upZ Up vector
+     */
+    fun lookAt(
+        eyeX: Float, eyeY: Float, eyeZ: Float,
+        centerX: Float, centerY: Float, centerZ: Float,
+        upX: Float, upY: Float, upZ: Float
+    ): FloatArray {
+        // Forward vector (from center to eye)
+        var fx = eyeX - centerX
+        var fy = eyeY - centerY
+        var fz = eyeZ - centerZ
+        val fLen = kotlin.math.sqrt(fx * fx + fy * fy + fz * fz)
+        fx /= fLen
+        fy /= fLen
+        fz /= fLen
+
+        // Right vector = up × forward
+        var rx = upY * fz - upZ * fy
+        var ry = upZ * fx - upX * fz
+        var rz = upX * fy - upY * fx
+        val rLen = kotlin.math.sqrt(rx * rx + ry * ry + rz * rz)
+        rx /= rLen
+        ry /= rLen
+        rz /= rLen
+
+        // True up vector = forward × right
+        val ux = fy * rz - fz * ry
+        val uy = fz * rx - fx * rz
+        val uz = fx * ry - fy * rx
+
+        return floatArrayOf(
+            rx, ux, fx, 0f,
+            ry, uy, fy, 0f,
+            rz, uz, fz, 0f,
+            -(rx * eyeX + ry * eyeY + rz * eyeZ),
+            -(ux * eyeX + uy * eyeY + uz * eyeZ),
+            -(fx * eyeX + fy * eyeY + fz * eyeZ),
+            1f
+        )
+    }
 }
