@@ -5,9 +5,7 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import com.stardroid.awakening.data.ConstellationCatalog
 import com.stardroid.awakening.data.StarCatalog
-import com.stardroid.awakening.renderer.DrawBatch
 import com.stardroid.awakening.renderer.Matrix
-import com.stardroid.awakening.renderer.PrimitiveType
 
 /**
  * Android Surface view that hosts Vulkan rendering.
@@ -101,23 +99,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                 val fpsUpdateIntervalNs = 500_000_000L // Update FPS every 0.5 seconds
                 var currentFps = 0.0
 
-                // Triangle 1: RGB triangle (rotating)
-                val triangle1Vertices = floatArrayOf(
-                    // x, y, z, r, g, b, a
-                     0.0f, -0.5f, 0f,  1f, 0f, 0f, 1f,  // red
-                    -0.5f,  0.5f, 0f,  0f, 1f, 0f, 1f,  // green
-                     0.5f,  0.5f, 0f,  0f, 0f, 1f, 1f,  // blue
-                )
-
-                // Triangle 2: Yellow-Cyan-Magenta (static, offset)
-                val triangle2Vertices = floatArrayOf(
-                    // x, y, z, r, g, b, a
-                    0.3f, -0.3f, 0f,  1f, 1f, 0f, 1f,  // yellow
-                    0.1f,  0.1f, 0f,  0f, 1f, 1f, 1f,  // cyan
-                    0.5f,  0.1f, 0f,  1f, 0f, 1f, 1f,  // magenta
-                )
-
-
                 while (rendering) {
                     val frameStart = System.currentTimeMillis()
 
@@ -160,23 +141,6 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                                 ))
                             }
                         }
-
-                        // Draw demo triangles
-                        val batch1 = DrawBatch(
-                            type = PrimitiveType.TRIANGLES,
-                            vertices = triangle1Vertices,
-                            vertexCount = 3,
-                            transform = Matrix.rotateZ(angle)
-                        )
-                        renderer.draw(batch1)
-
-                        val batch2 = DrawBatch(
-                            type = PrimitiveType.TRIANGLES,
-                            vertices = triangle2Vertices,
-                            vertexCount = 3,
-                            transform = Matrix.identity()
-                        )
-                        renderer.draw(batch2)
 
                         // End frame
                         renderer.endFrame()
