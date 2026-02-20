@@ -3,6 +3,7 @@ package com.stardroid.awakening
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
@@ -16,6 +17,7 @@ import androidx.core.app.ActivityCompat
 import com.stardroid.awakening.control.AstronomerModel
 import com.stardroid.awakening.control.SensorOrientationController
 import com.stardroid.awakening.data.ConstellationCatalog
+import com.stardroid.awakening.data.MessierCatalog
 import com.stardroid.awakening.data.StarCatalog
 import com.stardroid.awakening.math.LatLong
 import com.stardroid.awakening.ar.CameraSurfaceView
@@ -33,6 +35,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var layerToggleOverlay: LayerToggleOverlay
     private lateinit var layerManager: LayerManager
     private lateinit var starCatalog: StarCatalog
+    private lateinit var messierCatalog: MessierCatalog
     private var cameraPreviewView: CameraSurfaceView? = null
     private lateinit var constellationCatalog: ConstellationCatalog
     private lateinit var astronomerModel: AstronomerModel
@@ -49,9 +52,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
         // Load catalogs in background
         starCatalog = StarCatalog(assets)
         constellationCatalog = ConstellationCatalog(assets)
+        messierCatalog = MessierCatalog(assets)
         Thread {
             starCatalog.load()
             constellationCatalog.load()
+            messierCatalog.load()
         }.start()
 
         // Create container layout
@@ -61,6 +66,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         vulkanSurfaceView = VulkanSurfaceView(this)
         vulkanSurfaceView.starCatalog = starCatalog
         vulkanSurfaceView.constellationCatalog = constellationCatalog
+        vulkanSurfaceView.messierCatalog = messierCatalog
         vulkanSurfaceView.astronomerModel = astronomerModel
         vulkanSurfaceView.layerManager = layerManager
         container.addView(vulkanSurfaceView, FrameLayout.LayoutParams(
@@ -144,6 +150,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
         sensorController?.stop()
         vulkanSurfaceView.onPause()
         super.onPause()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        android.util.Log.i("MainActivity", "Configuration changed: orientation=${newConfig.orientation}")
+        // No need to recreate activity - just let the SurfaceView handle the resize
     }
 
     private fun requestLocationUpdates() {

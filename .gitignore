@@ -1,6 +1,6 @@
 # Gradle
 .gradle/
-build/
+**/build/
 !gradle/wrapper/gradle-wrapper.jar
 
 # Android
@@ -10,7 +10,7 @@ build/
 local.properties
 captures/
 .externalNativeBuild/
-.cxx/
+**/.cxx/
 *.log
 
 # Signing
@@ -29,6 +29,7 @@ signing.properties
 # Kotlin/Java
 *.class
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.aar
 
@@ -46,9 +47,6 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# Linux
-*~
-
 # Compiled shaders
 *.spv
 
@@ -57,3 +55,4 @@ generated/
 
 # Test outputs
 test-results/
+

@@ -5,11 +5,9 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import com.stardroid.awakening.control.AstronomerModel
 import com.stardroid.awakening.data.ConstellationCatalog
+import com.stardroid.awakening.data.MessierCatalog
 import com.stardroid.awakening.data.StarCatalog
-import com.stardroid.awakening.layers.GridLayer
-import com.stardroid.awakening.layers.HorizonLayer
-import com.stardroid.awakening.layers.Layer
-import com.stardroid.awakening.layers.LayerManager
+import com.stardroid.awakening.layers.*
 import com.stardroid.awakening.renderer.Matrix
 
 /**
@@ -35,6 +33,9 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
     /** Constellation catalog for rendering. Set before surface is created. */
     var constellationCatalog: ConstellationCatalog? = null
 
+    /** Messier catalog for rendering. Set before surface is created. */
+    var messierCatalog: MessierCatalog? = null
+
     /** Astronomer model for sensor-based orientation. Set before surface is created. */
     var astronomerModel: AstronomerModel? = null
 
@@ -46,6 +47,16 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
     /** Horizon layer for horizon line and cardinal markers. */
     private val horizonLayer = HorizonLayer()
+
+    /** Solar system layer for Sun, Moon, and planets. */
+    private val solarSystemLayer = SolarSystemLayer()
+
+    private val eclipticLayer = EclipticLayer()
+    private val meteorShowerLayer = MeteorShowerLayer()
+    private val cometLayer = CometLayer()
+    private val skyGradientLayer = SkyGradientLayer()
+    private val issLayer = ISSLayer()
+    private val starOfBethlehemLayer = StarOfBethlehemLayer()
 
     /** Callback for FPS updates. Called on render thread, use post() to update UI. */
     var onFpsUpdate: ((fps: Double) -> Unit)? = null
@@ -90,20 +101,19 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         // Stop rendering and clean up
+        issLayer.stop()
         stopRenderLoop()
         renderer.release()
     }
 
     fun onResume() {
-        // Can be called from Activity.onResume() if needed for additional setup
-        // Note: Don't set rendering=true here - surfaceCreated handles starting the loop
-        // This is called before surfaceCreated in the lifecycle
+        // Start ISS background fetch
+        issLayer.start()
     }
 
     fun onPause() {
-        // Can be called from Activity.onPause() if needed for cleanup
-        // Note: surfaceDestroyed will handle stopping the render loop
-        // Only stop here if we want to pause rendering while surface is still valid
+        // Stop ISS background fetch
+        issLayer.stop()
     }
 
     private fun startRenderLoop() {
@@ -128,17 +138,37 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                 // Fallback rotation when no sensor data
                 var fallbackAngle = 0f
 
+                var lastLoggedWidth = 0
+                var lastLoggedHeight = 0
+
                 while (rendering) {
                     val frameStart = System.currentTimeMillis()
 
-                    // Set up projection matrix
-                    val aspect = if (surfaceHeight > 0) {
-                        surfaceWidth.toFloat() / surfaceHeight.toFloat()
+                    // Get actual swapchain dimensions for correct aspect ratio
+                    // This ensures we use the current swapchain size, not the surface size
+                    // which may be pending resize
+                    val dims = renderer.getSwapchainDimensions()
+                    val swapWidth = if (dims[0] > 0) dims[0] else surfaceWidth
+                    val swapHeight = if (dims[1] > 0) dims[1] else surfaceHeight
+
+                    // Set up projection matrix using actual swapchain dimensions
+                    val aspect = if (swapHeight > 0) {
+                        swapWidth.toFloat() / swapHeight.toFloat()
                     } else {
                         1f
                     }
 
+                    // Log dimension changes
+                    if (swapWidth != lastLoggedWidth || swapHeight != lastLoggedHeight) {
+                        android.util.Log.i(TAG, "Dimensions changed: swapchain=${swapWidth}x${swapHeight}, surface=${surfaceWidth}x${surfaceHeight}, aspect=$aspect, fov=${astronomerModel?.fieldOfView ?: 60f}")
+                        lastLoggedWidth = swapWidth
+                        lastLoggedHeight = swapHeight
+                    }
+
+                    // Use the base FOV as vertical FOV directly
+                    // This is the standard approach - landscape will show more sky horizontally
                     val fov = astronomerModel?.fieldOfView ?: 60f
+
                     val projection = Matrix.perspective(
                         fovYDegrees = fov,
                         aspect = aspect,
@@ -154,11 +184,9 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                         val up = pointing.perpendicular
 
                         // Camera at origin, looking toward lineOfSight direction
-                        // lookAt expects a point to look at, so we use the unit vector
-                        // scaled to be in front of the camera
                         Matrix.lookAt(
                             0f, 0f, 0f,
-                            -lineOfSight.x, -lineOfSight.y, -lineOfSight.z,
+                            lineOfSight.x, lineOfSight.y, lineOfSight.z,
                             up.x, up.y, up.z
                         )
                     } ?: run {
@@ -172,15 +200,31 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                     }
                     renderer.setViewMatrix(viewMatrix)
 
+                    val layers = layerManager
+
+                    // Sky Gradient: set background opacity before beginFrame
+                    if (layers?.isVisible(Layer.SKY_GRADIENT) == true &&
+                        layers.isVisible(Layer.AR_CAMERA) != true) {
+                        val opacity = skyGradientLayer.computeOpacity(astronomerModel)
+                        renderer.setBackgroundOpacity(opacity)
+                    }
+
                     // Begin frame
                     if (renderer.beginFrame()) {
-                        val layers = layerManager
 
                         // Draw grid lines first (background layer)
                         if (layers?.isVisible(Layer.GRID) == true) {
                             val gridBatch = gridLayer.getGridBatch()
                             if (gridBatch.vertexCount > 0) {
                                 renderer.draw(gridBatch)
+                            }
+                        }
+
+                        // Draw ecliptic
+                        if (layers?.isVisible(Layer.ECLIPTIC) == true) {
+                            val eclipticBatch = eclipticLayer.getBatch()
+                            if (eclipticBatch.vertexCount > 0) {
+                                renderer.draw(eclipticBatch)
                             }
                         }
 
@@ -222,6 +266,56 @@ class VulkanSurfaceView(context: Context) : SurfaceView(context), SurfaceHolder.
                                 if (starBatch.vertexCount > 0) {
                                     renderer.draw(starBatch)
                                 }
+                            }
+                        }
+
+                        // Draw Messier objects
+                        if (layers?.isVisible(Layer.MESSIER) == true) {
+                            messierCatalog?.let { catalog ->
+                                val messierBatch = catalog.getMessierBatch()
+                                if (messierBatch.vertexCount > 0) {
+                                    renderer.draw(messierBatch)
+                                }
+                            }
+                        }
+
+                        // Draw solar system objects (Sun, Moon, planets)
+                        if (layers?.isVisible(Layer.SOLAR_SYSTEM) != false) {
+                            val solarSystemBatch = solarSystemLayer.getSolarSystemBatch()
+                            if (solarSystemBatch.vertexCount > 0) {
+                                renderer.draw(solarSystemBatch)
+                            }
+                        }
+
+                        // Draw meteor shower radiants
+                        if (layers?.isVisible(Layer.METEOR_SHOWERS) == true) {
+                            val meteorBatch = meteorShowerLayer.getBatch()
+                            if (meteorBatch.vertexCount > 0) {
+                                renderer.draw(meteorBatch)
+                            }
+                        }
+
+                        // Draw comets
+                        if (layers?.isVisible(Layer.COMETS) == true) {
+                            val cometBatch = cometLayer.getBatch()
+                            if (cometBatch.vertexCount > 0) {
+                                renderer.draw(cometBatch)
+                            }
+                        }
+
+                        // Draw ISS
+                        if (layers?.isVisible(Layer.ISS) == true) {
+                            val issBatch = issLayer.getBatch(astronomerModel)
+                            if (issBatch.vertexCount > 0) {
+                                renderer.draw(issBatch)
+                            }
+                        }
+
+                        // Draw Star of Bethlehem
+                        if (layers?.isVisible(Layer.STAR_OF_BETHLEHEM) == true) {
+                            val bethBatch = starOfBethlehemLayer.getBatch()
+                            if (bethBatch.vertexCount > 0) {
+                                renderer.draw(bethBatch)
                             }
                         }
 

@@ -7,7 +7,11 @@ application {
     mainClass.set("com.stardroid.awakening.tools.MainKt")
 }
 
+tasks.named<JavaExec>("run") {
+    workingDir = rootProject.projectDir
+}
+
 dependencies {
-    implementation("com.google.flatbuffers:flatbuffers-java:24.3.25")
+    implementation(project(":datamodel"))
     implementation("com.google.code.gson:gson:2.10.1")
 }

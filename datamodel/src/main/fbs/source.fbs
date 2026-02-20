@@ -3,7 +3,7 @@
 
 namespace com.stardroid.awakening.data;
 
-// Geocentric equatorial coordinates (right ascension and declination in radians)
+// Geocentric equatorial coordinates (right ascension and declination in degrees)
 struct GeocentricCoordinates {
   right_ascension: float;
   declination: float;

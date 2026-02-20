@@ -2,15 +2,15 @@ package com.stardroid.awakening.data
 
 import android.content.res.AssetManager
 import android.util.Log
-import com.google.android.stardroid.source.proto.SourceProto
 import com.stardroid.awakening.renderer.DrawBatch
 import com.stardroid.awakening.renderer.Matrix
 import com.stardroid.awakening.renderer.PrimitiveType
+import java.nio.ByteBuffer
 import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Loads and provides constellation line data from the binary protobuf catalog.
+ * Loads and provides constellation line data from the FlatBuffer binary catalog.
  *
  * Constellation lines are stored as line strips with RA/Dec coordinates.
  * They are converted to 3D xyz positions on the celestial sphere (unit vectors)
@@ -27,10 +27,6 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
         val r: Float, val g: Float, val b: Float, val a: Float
     )
 
-    /**
-     * Load constellation lines from binary protobuf file.
-     * Call this before accessing constellation data.
-     */
     fun load() {
         if (isLoaded) return
 
@@ -38,17 +34,18 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
         val startTime = System.currentTimeMillis()
 
         try {
-            assetManager.open("constellations.binary").use { stream ->
-                val sources = SourceProto.AstronomicalSourcesProto.parseFrom(stream)
+            assetManager.open("constellations.bin").use { stream ->
+                val bytes = stream.readBytes()
+                val buf = ByteBuffer.wrap(bytes)
+                val sources = AstronomicalSources.getRootAsAstronomicalSources(buf)
 
                 val loadedSegments = mutableListOf<LineSegment>()
 
-                for (i in 0 until sources.sourceCount) {
-                    val source = sources.getSource(i)
+                for (i in 0 until sources.sourcesLength) {
+                    val source = sources.sources(i)!!
 
-                    // Each source may have multiple line elements
-                    for (j in 0 until source.lineCount) {
-                        val line = source.getLine(j)
+                    for (j in 0 until source.linesLength) {
+                        val line = source.lines(j)!!
 
                         // Extract color (ARGB packed)
                         val color = line.color.toInt()
@@ -59,8 +56,8 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
 
                         // Convert line strip vertices to xyz unit vectors
                         val vertices = mutableListOf<Triple<Float, Float, Float>>()
-                        for (k in 0 until line.vertexCount) {
-                            val vertex = line.getVertex(k)
+                        for (k in 0 until line.verticesLength) {
+                            val vertex = line.vertices(k)!!
                             val raRad = Math.toRadians(vertex.rightAscension.toDouble())
                             val decRad = Math.toRadians(vertex.declination.toDouble())
 
@@ -72,7 +69,6 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
                         }
 
                         // Convert line strip to line segments (pairs)
-                        // A line strip with N vertices becomes N-1 segments
                         for (k in 0 until vertices.size - 1) {
                             val v1 = vertices[k]
                             val v2 = vertices[k + 1]
@@ -98,10 +94,6 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
         }
     }
 
-    /**
-     * Get all constellation lines as a DrawBatch for rendering.
-     * Lines are rendered as pairs of vertices on the celestial sphere.
-     */
     fun getConstellationBatch(): DrawBatch {
         if (!isLoaded) {
             Log.w(TAG, "Constellation catalog not loaded, returning empty batch")
@@ -114,12 +106,10 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
         }
 
         // Build vertex array: 2 vertices per segment, 7 floats per vertex (xyz + rgba)
-        // Each segment has 2 vertices = 14 floats
         val vertices = FloatArray(lineSegments.size * 14)
         var offset = 0
 
         for (segment in lineSegments) {
-            // First vertex of the segment
             vertices[offset++] = segment.x1
             vertices[offset++] = segment.y1
             vertices[offset++] = segment.z1
@@ -128,7 +118,6 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
             vertices[offset++] = segment.b
             vertices[offset++] = segment.a
 
-            // Second vertex of the segment
             vertices[offset++] = segment.x2
             vertices[offset++] = segment.y2
             vertices[offset++] = segment.z2
@@ -141,14 +130,11 @@ class ConstellationCatalog(private val assetManager: AssetManager) {
         return DrawBatch(
             type = PrimitiveType.LINES,
             vertices = vertices,
-            vertexCount = lineSegments.size * 2,  // 2 vertices per segment
+            vertexCount = lineSegments.size * 2,
             transform = Matrix.identity()
         )
     }
 
-    /**
-     * Get the number of loaded line segments.
-     */
     val lineCount: Int
         get() = lineSegments.size
 

@@ -52,7 +52,7 @@ class VulkanRenderer : RendererInterface {
     override fun beginFrame(): Boolean {
         if (nativeContext == 0L) return false
 
-        // Upload matrices if changed
+        // Upload matrices if changed (before beginFrame to ensure they're ready)
         if (matricesDirty) {
             nativeSetViewMatrix(nativeContext, viewMatrix)
             nativeSetProjectionMatrix(nativeContext, projectionMatrix)
@@ -98,6 +98,18 @@ class VulkanRenderer : RendererInterface {
     fun setBackgroundOpacity(opacity: Float) {
         if (nativeContext != 0L) {
             nativeSetBackgroundOpacity(nativeContext, opacity.coerceIn(0f, 1f))
+        }
+    }
+
+    /**
+     * Get current swapchain dimensions (width, height).
+     * Returns [0, 0] if not initialized.
+     */
+    fun getSwapchainDimensions(): IntArray {
+        return if (nativeContext != 0L) {
+            nativeGetSwapchainDimensions(nativeContext)
+        } else {
+            intArrayOf(0, 0)
         }
     }
 
@@ -157,6 +169,7 @@ class VulkanRenderer : RendererInterface {
     private external fun nativeSetViewMatrix(context: Long, matrix: FloatArray)
     private external fun nativeSetProjectionMatrix(context: Long, matrix: FloatArray)
     private external fun nativeSetBackgroundOpacity(context: Long, opacity: Float)
+    private external fun nativeGetSwapchainDimensions(context: Long): IntArray
 
     companion object {
         private var libraryLoaded = false

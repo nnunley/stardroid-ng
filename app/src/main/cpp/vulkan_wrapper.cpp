@@ -10,6 +10,8 @@
 #include <cstring>
 #include <algorithm>
 #include <memory>
+#include <mutex>
+#include <atomic>
 #include "shaders.h"
 #include "math_utils.h"
 #include "vulkan_raii.h"
@@ -145,6 +147,12 @@ struct VulkanContext {
     // Frame state
     bool inFrame = false;
     uint32_t currentImageIndex = 0;
+
+    // Thread synchronization for resize operations
+    std::mutex swapchainMutex;
+    std::atomic<bool> resizePending{false};
+    int pendingWidth = 0;
+    int pendingHeight = 0;
 
     // Helper to get raw device handle for Vulkan API calls
     VkDevice getDevice() const { return device.get(); }
@@ -525,15 +533,19 @@ static VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR
 
 // Choose swap extent (resolution of swapchain images)
 static VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, uint32_t width, uint32_t height) {
-    if (capabilities.currentExtent.width != UINT32_MAX) {
-        return capabilities.currentExtent;
-    }
-
+    // On Android, always use the requested width/height (clamped to bounds)
+    // The surface capabilities.currentExtent may be stale during orientation changes
     VkExtent2D actualExtent = {width, height};
     actualExtent.width = std::max(capabilities.minImageExtent.width,
                                    std::min(capabilities.maxImageExtent.width, actualExtent.width));
     actualExtent.height = std::max(capabilities.minImageExtent.height,
                                     std::min(capabilities.maxImageExtent.height, actualExtent.height));
+
+    LOGI("chooseSwapExtent: requested=%dx%d, capabilities.current=%dx%d, result=%dx%d",
+         width, height,
+         capabilities.currentExtent.width, capabilities.currentExtent.height,
+         actualExtent.width, actualExtent.height);
+
     return actualExtent;
 }
 
@@ -575,7 +587,10 @@ static bool createSwapchain(VulkanContext* ctx) {
         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
+    // Use the surface's current transform - the compositor will handle rotation
     createInfo.preTransform = support.capabilities.currentTransform;
+
+    LOGI("Surface transform: using=0x%x", support.capabilities.currentTransform);
 
     // Choose composite alpha - prefer INHERIT, fall back to OPAQUE
     VkCompositeAlphaFlagBitsKHR compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -1580,10 +1595,12 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeResize(
     }
 
     if (ctx->width != width || ctx->height != height) {
-        LOGI("Surface resized: %dx%d -> %dx%d", ctx->width, ctx->height, width, height);
-        ctx->width = width;
-        ctx->height = height;
-        recreateSwapchain(ctx);
+        LOGI("Surface resize requested: %dx%d -> %dx%d", ctx->width, ctx->height, width, height);
+        // Set pending flag for render thread to handle
+        std::lock_guard<std::mutex> lock(ctx->swapchainMutex);
+        ctx->pendingWidth = width;
+        ctx->pendingHeight = height;
+        ctx->resizePending.store(true);
     }
 }
 
@@ -1659,6 +1676,29 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeSetBackgroundOpacity(
     ctx->backgroundOpacity = opacity;
 }
 
+// Get current swapchain dimensions (for aspect ratio calculation)
+JNIEXPORT jintArray JNICALL
+Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeGetSwapchainDimensions(
+    JNIEnv* env, jobject obj, jlong contextHandle) {
+
+    auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
+    jintArray result = env->NewIntArray(2);
+    if (result == nullptr || ctx == nullptr || !ctx->initialized) {
+        jint dims[2] = {0, 0};
+        if (result != nullptr) {
+            env->SetIntArrayRegion(result, 0, 2, dims);
+        }
+        return result;
+    }
+
+    jint dims[2] = {
+        static_cast<jint>(ctx->swapchainExtent.width),
+        static_cast<jint>(ctx->swapchainExtent.height)
+    };
+    env->SetIntArrayRegion(result, 0, 2, dims);
+    return result;
+}
+
 // New Phase 2 API: Begin frame
 JNIEXPORT jboolean JNICALL
 Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeBeginFrame(
@@ -1667,6 +1707,20 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeBeginFrame(
     auto* ctx = reinterpret_cast<VulkanContext*>(contextHandle);
     if (ctx == nullptr || !ctx->initialized) {
         return JNI_FALSE;
+    }
+
+    // Check for pending resize from main thread (orientation change)
+    if (ctx->resizePending.load()) {
+        std::lock_guard<std::mutex> lock(ctx->swapchainMutex);
+        if (ctx->resizePending.load()) {
+            LOGI("Processing pending resize: %dx%d -> %dx%d",
+                 ctx->width, ctx->height, ctx->pendingWidth, ctx->pendingHeight);
+            ctx->width = ctx->pendingWidth;
+            ctx->height = ctx->pendingHeight;
+            recreateSwapchain(ctx);
+            ctx->resizePending.store(false);
+            return JNI_FALSE;  // Skip this frame
+        }
     }
 
     // Wait for previous frame
@@ -1882,11 +1936,13 @@ Java_com_stardroid_awakening_vulkan_VulkanRenderer_nativeEndFrame(
 
     result = vkQueuePresentKHR(ctx->presentQueue, &presentInfo);
 
-    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-        recreateSwapchain(ctx);
-    } else if (result != VK_SUCCESS) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+        // Swapchain is out of date - will be handled in next beginFrame
+        LOGI("Present returned OUT_OF_DATE, will recreate in next frame");
+    } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
         LOGE("Failed to present swapchain image: %s (%d)", vkResultToString(result), result);
     }
+    // Note: SUBOPTIMAL is OK - we can continue rendering, resize will be handled if needed
 
     ctx->currentFrame = (ctx->currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 
