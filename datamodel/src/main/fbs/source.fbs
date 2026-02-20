@@ -1,0 +1,62 @@
+// FlatBuffers schema for astronomical source data
+// Auto-generated Kotlin code will be in com.stardroid.awakening.data package
+
+namespace com.stardroid.awakening.data;
+
+// Geocentric equatorial coordinates (right ascension and declination in degrees)
+struct GeocentricCoordinates {
+  right_ascension: float;
+  declination: float;
+}
+
+// Shape types for point elements
+enum Shape : byte {
+  Circle = 0,
+  Star = 1,
+  EllipticalGalaxy = 2,
+  SpiralGalaxy = 3,
+  IrregularGalaxy = 4,
+  GlobularCluster = 5,
+  OpenCluster = 6,
+  Nebula = 7
+}
+
+// A point element representing a single astronomical object
+table PointElement {
+  color: uint32;
+  size: int32;
+  location: GeocentricCoordinates;
+  shape: Shape = Circle;
+}
+
+// A label element for displaying text at a location
+table LabelElement {
+  text: string;
+  location: GeocentricCoordinates;
+  color: uint32;
+  offset: float;
+}
+
+// A line element for drawing lines between points (e.g., constellation lines)
+table LineElement {
+  color: uint32;
+  line_width: float;
+  vertices: [GeocentricCoordinates];
+}
+
+// An astronomical source with all its visual elements
+table AstronomicalSource {
+  names: [string];
+  search_location: GeocentricCoordinates;
+  level: int32;
+  points: [PointElement];
+  labels: [LabelElement];
+  lines: [LineElement];
+}
+
+// Root type containing all astronomical sources
+table AstronomicalSources {
+  sources: [AstronomicalSource];
+}
+
+root_type AstronomicalSources;

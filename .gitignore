@@ -1,0 +1,58 @@
+# Gradle
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android
+*.apk
+*.ap_
+*.aab
+local.properties
+captures/
+.externalNativeBuild/
+**/.cxx/
+*.log
+
+# Signing
+*.jks
+*.keystore
+signing.properties
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Kotlin/Java
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+*.war
+*.aar
+
+# CMake
+cmake-build-*/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Compiled shaders
+*.spv
+
+# Generated files
+generated/
+
+# Test outputs
+test-results/
+
